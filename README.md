@@ -1,0 +1,129 @@
+# Talent Hub · HR 人才库平台
+
+[![Quality](https://github.com/MaYangle/hr-talent-platform/actions/workflows/quality.yml/badge.svg)](https://github.com/MaYangle/hr-talent-platform/actions/workflows/quality.yml)
+[MIT License](LICENSE) · [快速开始](#快速开始) · [使用手册](docs/USAGE.md) · [配置参考](docs/CONFIGURATION.md) · [贡献指南](CONTRIBUTING.md)
+
+面向 HR 和招聘团队的自托管人才工作区：集中管理简历和人才档案，按岗位分配跟进责任，用可回溯证据辅助匹配，并连接面试反馈和招聘运营分析。
+
+应用使用 Python、SQLite 和原生浏览器界面，无需前端构建。首次启动创建自己的管理员账号，进入空白工作区；仓库不附带候选人数据、模拟简历、默认密码或预置岗位。
+
+当前为 **0.1.0 早期公开版本**，适合单组织、单实例的内部工作区。采用 SQLite WAL 和进程内 Worker；尚不提供高可用、多组织隔离、SSO 或 PostgreSQL。面向公司部署时，应结合实际访问量和数据政策完成部署验收。
+
+## 核心能力
+
+| 业务环节 | 提供的能力                                                                   |
+| -------- | ---------------------------------------------------------------------------- |
+| 简历入库 | PDF、DOCX、UTF-8 TXT，本地 OCR、逐文件任务、字段原文定位、重复对照、失败恢复 |
+| 人才档案 | 原件与版本、完整度与人工核实、状态历史、敏感字段权限                         |
+| 搜索队列 | 关键词与组合筛选、更新及简历日期区间、排序、分页、个人和团队常用视图         |
+| 岗位跟进 | 不可变 JD 版本、各岗位独立阶段、负责人、下一步动作与期限                     |
+| 面试协作 | 轮次与安排、时间冲突检查、统一反馈、应用内逾期提醒                           |
+| 决策辅助 | 证据规则或本地模型、硬性条件、覆盖度、原文证据、固定输入快照                 |
+| 运营复盘 | 阶段转化、停留时间、渠道质量、积压事项、指标下钻与授权导出                   |
+| 团队运维 | 四类角色、服务端权限、审计、完整备份与恢复、健康检查、工作区独占锁           |
+
+匹配用于整理 HR 复核队列，不自动联系、录用或淘汰候选人。原件、提取、OCR 和模型处理默认留在本机服务环境；模型不可用时不会自动调用云端服务。
+
+## 快速开始
+
+### 依赖要求
+
+- **Python 3.12**：当前 CI 使用该版本；直接及间接 Python 依赖固定在 [requirements.txt](requirements.txt)。
+- 现代 Chrome、Edge 或 Firefox 浏览器。
+- 首次安装依赖需要访问 Python 包源；可另行准备离线 wheel 包。
+- OCR 为可选能力：Windows 需要系统 OCR 语言包；Linux 需要 Tesseract 及语言数据。
+- **Node.js 22+ 仅用于开发检查和浏览器测试**，运行应用无需 Node.js。
+
+### Windows
+
+```powershell
+git clone https://github.com/MaYangle/hr-talent-platform.git
+cd hr-talent-platform
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe server.py
+```
+
+也可以双击根目录的 `start_windows.cmd`，首次会创建虚拟环境、安装依赖并打开浏览器；`stop_windows.cmd` 用于停止该目录启动的后台服务。
+
+### Linux
+
+```bash
+git clone https://github.com/MaYangle/hr-talent-platform.git
+cd hr-talent-platform
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python server.py
+```
+
+访问 **http://127.0.0.1:4173**，在服务所在电脑上创建管理员，然后建立团队账号、导入获得授权的简历并核对字段。业务流程见[使用手册](docs/USAGE.md)。
+
+macOS 的基础服务遵循同样的 Python 启动方式，但当前 CI 不包含 macOS，且没有内置 macOS OCR 适配器；扫描件可先转换成带文本层的 PDF。
+
+### Docker
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+默认只映射本机 4173，数据保存在 `talent-data` 具名卷；镜像包含中文和英文 Tesseract OCR。容器配置、模型网络限制、HTTPS 与备份见[部署与运维](docs/OPERATIONS.md)。
+
+## 配置与数据
+
+基础功能不需要 API Key。可通过环境变量调整启动配置，例如 PowerShell：
+
+```powershell
+$env:TALENT_DATA_DIR = 'D:\TalentHubData'
+$env:TALENT_PORT = '4180'
+.venv\Scripts\python.exe server.py
+```
+
+Python 入口不会自动加载 `.env`。[.env.example](.env.example) 提供无凭据的配置清单；变量、范围和 Docker 用法见[配置参考](docs/CONFIGURATION.md)。
+
+默认数据目录为 Windows 的 `%LOCALAPPDATA%/TalentHub/workspace-v2`，其他系统为 `~/TalentHub/workspace-v2`。数据库、原件和审计存放在该服务端目录，浏览器刷新不会删除团队资料。同一个数据目录只允许一个应用实例，防止重复 Worker 改写任务状态。
+
+本地模型通过管理员设置连接 OpenAI 兼容接口，仅接受回环地址；可选密钥从 `TALENT_MODEL_API_KEY` 读取。模型、数据库、简历、导出备份及凭据均不应提交到仓库。
+
+## 架构与目录
+
+```mermaid
+flowchart LR
+    Browser[浏览器] --> HTTP[身份校验与 HTTP API]
+    HTTP --> Service[业务服务]
+    Service --> DB[(SQLite WAL)]
+    Service --> Files[鉴权原件存储]
+    Worker[持久化任务 Worker] --> DB
+    Worker --> Parser[本地解析与 OCR]
+    Worker --> Model[可选本地模型]
+```
+
+| 路径                                               | 职责                               |
+| -------------------------------------------------- | ---------------------------------- |
+| `server.py`                                        | 命令行入口                         |
+| `talent_hub/config.py`、`runtime.py`、`locking.py` | 配置校验、生命周期和工作区独占     |
+| `talent_hub/http.py`、`service.py`                 | HTTP 边界、业务权限与任务流程      |
+| `talent_hub/store.py`、`domain.py`、`model.py`     | 数据事务、领域规则及模型契约       |
+| `talent_hub/parsing.py`、`metrics.py`              | 文档提取和统一统计口径             |
+| `web/`                                             | 原生 ES Modules 界面与共享呈现组件 |
+| `tests/`                                           | 临时工作区回归测试及浏览器流程测试 |
+| `docs/`、`scripts/`                                | 用户文档、运维和仓库检查工具       |
+
+## 文档与常见问题
+
+- [使用手册](docs/USAGE.md)：档案、导入、岗位、面试、匹配、权限。
+- [配置参考](docs/CONFIGURATION.md)：环境变量、上传限制、会话及本地模型。
+- [部署与运维](docs/OPERATIONS.md)：内网、HTTPS、Docker、健康检查、备份、升级和 FAQ。
+- [产品设计与数据规范](docs/PRODUCT_DESIGN.md)：证据、快照、权限及统计定义。
+- [API 说明](docs/API.md)：鉴权、状态码和主要接口。
+- [开发与测试](docs/DEVELOPMENT.md)：本地质量检查、隔离测试和 CI。
+
+初始列表为空是正常状态；“待补全”与“待核实”分别处理字段质量与人工确认。无法启动、重复工作区、OCR 或模型连接问题，见[常见问题](docs/OPERATIONS.md#常见问题)。
+
+## 贡献与安全反馈
+
+欢迎在 [Issues](https://github.com/MaYangle/hr-talent-platform/issues) 讨论问题或改进，通过 Pull Request 提交聚焦的变更。先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。涉及账号绕过、原件泄露等问题，请按 [SECURITY.md](SECURITY.md) 私密报告，避免在公开 Issue 上传资料或凭据。
+
+## 许可与依赖
+
+本项目按 [MIT License](LICENSE) 发布。第三方依赖保留各自许可，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [licenses/](licenses/)。版本变化见 [CHANGELOG.md](CHANGELOG.md)。
