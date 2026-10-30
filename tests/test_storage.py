@@ -46,11 +46,91 @@ class StorageTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
+    def test_retired_views_are_removed_without_touching_jobs(self):
+        with self.store.tx() as db:
+            self.store.put(db, "views", {"name": "retired"})
+            job = self.store.put(db, "jobs", {"name": "keep"})
+        migrated = Store(self.root)
+        with migrated.connect() as db:
+            self.assertEqual(migrated.all(db, "views"), [])
+            self.assertEqual(migrated.get(db, "jobs", job["id"])["name"], "keep")
+
     def test_new_workspace_contains_no_business_or_user_records(self):
         with self.store.connect() as db:
             self.assertEqual(self.store.all(db, "candidates"), [])
             self.assertEqual(self.store.all(db, "jobs"), [])
             self.assertEqual(self.store.users(db), [])
+            config = self.store.get(db, "config", "system")
+            self.assertEqual(config["mode"], "rules")
+            self.assertEqual(config["extractionMode"], "model")
+            self.assertEqual(config["model"], "Qwen/Qwen3.8-27B")
+            self.assertEqual(config["modelUrl"], "http://172.30.0.101:20001/v1")
+            self.assertTrue(config["ocr"])
+
+    def test_legacy_default_model_is_migrated_without_overwriting_custom_config(self):
+        legacy = {
+            "id": "system",
+            "mode": "rules",
+            "modelUrl": "http://127.0.0.1:11434/v1",
+            "model": "",
+            "ocr": True,
+        }
+        with self.store.tx() as db:
+            current = self.store.get(db, "config", "system")
+            self.store.put(db, "config", legacy, current["rev"])
+
+        migrated = Store(self.root)
+        with migrated.connect() as db:
+            config = migrated.get(db, "config", "system")
+            self.assertEqual(config["modelUrl"], "http://172.30.0.101:20001/v1")
+            self.assertEqual(config["model"], "Qwen/Qwen3.8-27B")
+            self.assertEqual(config["extractionMode"], "model")
+            self.assertEqual(config["mode"], "rules")
+
+        with self.store.tx() as db:
+            config = self.store.get(db, "config", "system")
+            self.store.put(
+                db,
+                "config",
+                config
+                | {
+                    "modelUrl": "http://localhost:9000/v1",
+                    "model": "custom-model",
+                    "extractionMode": "rules",
+                    "modelDefaultsVersion": 0,
+                },
+                config["rev"],
+            )
+        customized = Store(self.root)
+        with customized.connect() as db:
+            config = customized.get(db, "config", "system")
+            self.assertEqual(config["modelUrl"], "http://localhost:9000/v1")
+            self.assertEqual(config["model"], "custom-model")
+            self.assertEqual(config["extractionMode"], "rules")
+
+    def test_qwen_default_upgrade_enables_resume_extraction_but_keeps_rule_matching(self):
+        with self.store.tx() as db:
+            config = self.store.get(db, "config", "system")
+            self.store.put(
+                db,
+                "config",
+                config
+                | {
+                    "modelUrl": "http://172.30.0.101:20001/v1",
+                    "model": "Qwen/Qwen3.8-27B",
+                    "extractionMode": "rules",
+                    "modelDefaultsVersion": 1,
+                },
+                config["rev"],
+            )
+
+        migrated = Store(self.root)
+        with migrated.connect() as db:
+            config = migrated.get(db, "config", "system")
+            self.assertEqual(config["modelUrl"], "http://172.30.0.101:20001/v1")
+            self.assertEqual(config["model"], "Qwen/Qwen3.8-27B")
+            self.assertEqual(config["extractionMode"], "model")
+            self.assertEqual(config["mode"], "rules")
 
     def test_conflicting_update_preserves_first_writer(self):
         with self.store.tx() as db:

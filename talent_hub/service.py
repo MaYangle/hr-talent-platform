@@ -3,14 +3,15 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import secrets
 import threading
 import time
-import urllib.parse
 from pathlib import Path
 
 from .config import Settings
+from .credentials import read_model_key, save_model_key
 from .domain import (
     PERMISSIONS,
     RULE_VERSION,
@@ -24,7 +25,7 @@ from .domain import (
     utc,
     validate_candidate,
 )
-from .model import model_dimensions
+from .model import model_dimensions, model_fields, model_url_allowed, probe_model
 from .parsing import extract, validate_file
 from .store import Conflict, Store, password_hash, password_ok
 
@@ -177,7 +178,6 @@ class Service:
                 "jobVersions",
                 "applications",
                 "interviews",
-                "views",
                 "imports",
                 "runs",
                 "resumes",
@@ -211,8 +211,6 @@ class Service:
                     rows = [r for r in rows if r.get("candidateId") in ids]
                 if kind == "interviews" and user["role"] == "面试官":
                     rows = [r for r in rows if r.get("interviewerId") == user["id"]]
-                if kind == "views":
-                    rows = [r for r in rows if r.get("shared") or r.get("ownerId") == user["id"]]
                 if kind == "runs":
                     rows = [
                         {k: v for k, v in r.items() if k not in ["snapshots", "items"]}
@@ -226,6 +224,10 @@ class Service:
                 data[kind] = rows
             if "admin" in p:
                 data["config"] = self.store.get(db, "config", "system")
+                data["config"]["apiKeyConfigured"] = bool(
+                    (self.store.root / "model-key.secret").exists()
+                    or os.environ.get("TALENT_MODEL_API_KEY")
+                )
             if "audit" in p:
                 data["audit"] = [
                     dict(x) for x in db.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 150")
@@ -405,6 +407,14 @@ class Service:
             status = data.get("status", "待反馈")
             if status not in ["已安排", "待反馈", "已完成", "已取消"]:
                 raise APIError("面试状态无效")
+            meeting_mode = data.get("meetingMode", (old or {}).get("meetingMode", "待确认"))
+            if meeting_mode not in ["待确认", "电话", "视频", "现场"]:
+                raise APIError("面试方式无效")
+            meeting_location = str(
+                data.get("meetingLocation", (old or {}).get("meetingLocation", ""))
+            ).strip()
+            if len(meeting_location) > 2000:
+                raise APIError("地点或会议链接过长")
             if user["role"] == "面试官" and status not in ["待反馈", "已完成"]:
                 raise APIError("面试官仅可提交待反馈或已完成评价", 403)
             for key in ["score", "communication", "expertise", "problemSolving"]:
@@ -446,6 +456,8 @@ class Service:
                 ]
             }
             value.update(
+                meetingMode=meeting_mode,
+                meetingLocation=meeting_location,
                 id=data.get("id") or uid(),
                 round=roundno,
                 duration=duration,
@@ -505,6 +517,7 @@ class Service:
                         raise APIError("相同上传请求 ID 对应了不同内容", 409)
                     return [self.store.get(db, "imports", id) for id in receipt["taskIds"]]
             existing = self.store.all(db, "resumes")
+            config = self.store.get(db, "config", "system")
             out = []
             batch = uid()
             for name, raw, mime in checked:
@@ -530,9 +543,13 @@ class Service:
                     "evidence": {},
                     "pages": [],
                 }
-                if identical:
+                if identical and config.get("extractionMode", config.get("mode")) == "model":
+                    task.update(state="queued", parsed=False)
+                elif identical:
                     c = self.store.get(db, "candidates", identical["candidateId"])
                     fields, evidence = parse_fields(identical.get("pages", []))
+                    fields = identical.get("fields", fields)
+                    evidence = identical.get("evidence", evidence)
                     task.update(
                         fields=fields,
                         pages=identical.get("pages", []),
@@ -572,11 +589,14 @@ class Service:
             if task["rev"] != data.get("rev"):
                 raise Conflict("导入任务已更新，请刷新")
             action = data.get("action")
-            if action == "retry":
-                if task["state"] != "failed":
-                    raise APIError("只有失败项可重试")
-                task.update(state="queued", error="")
-                self.store.audit(db, user, "重试导入任务", id)
+            if action in ["retry", "reparse"]:
+                allowed_states = (
+                    ["failed"] if action == "retry" else ["review", "duplicate", "failed"]
+                )
+                if task["state"] not in allowed_states:
+                    raise APIError("当前任务不能重新提取")
+                task.update(state="queued", error="", modelWarning="", parsed=False)
+                self.store.audit(db, user, "重新提取导入字段", id)
             elif action == "skip":
                 if task["state"] in ["done", "skipped", "running"]:
                     raise APIError("当前任务不能跳过")
@@ -611,6 +631,7 @@ class Service:
                         "source": task["source"],
                         "text": "\n\n".join(p["text"] for p in task.get("pages", [])),
                         "pages": task.get("pages", []),
+                        "fields": task.get("fields", {}),
                         "evidence": task.get("evidence", {}),
                         "created": utc(),
                         "actor": user["name"],
@@ -643,6 +664,8 @@ class Service:
             if c["rev"] != data.get("rev"):
                 raise Conflict("档案已更新，请刷新")
             fields, evidence = parse_fields(r.get("pages", []))
+            fields = r.get("fields", fields)
+            evidence = r.get("evidence", evidence)
             c = validate_candidate({**fields, "verified": False}, c)
             c.update(currentResumeId=r["id"], evidence=evidence, verified=False)
             c = self.store.put(db, "candidates", c, c["rev"])
@@ -693,28 +716,27 @@ class Service:
             self.store.audit(db, user, "创建固定输入的匹配任务", run["id"])
             return run
 
-    def save_view(self, data, user):
-        with self.store.tx() as db:
-            old = self.store.get(db, "views", data["id"]) if data.get("id") else None
-            if old and old["ownerId"] != user["id"]:
-                self.need(user, "admin")
-            if data.get("shared"):
-                self.need(user, "write")
-            if not str(data.get("name", "")).strip():
-                raise APIError("请输入视图名称")
-            record = {
-                "id": data.get("id") or uid(),
-                "name": str(data["name"])[:80],
-                "ownerId": user["id"],
-                "shared": bool(data.get("shared")),
-                "filters": data.get("filters", {}),
-                "sort": data.get("sort", "updated-desc"),
-                "pageSize": min(100, max(1, int(data.get("pageSize", 20)))),
-            }
-            return self.store.put(db, "views", record, data.get("rev"))
-
     def admin(self, path, data, user):
         self.need(user, "admin")
+        if path == "model-test":
+            url = str(data.get("modelUrl", "")).rstrip("/")
+            model = str(data.get("model", "")).strip()
+            if not model_url_allowed(url):
+                raise APIError("模型接口不在允许的端点白名单中")
+            if not model:
+                raise APIError("请填写模型 ID")
+            probe_config = {"modelUrl": url, "model": model}
+            api_key = data.get("apiKey") or read_model_key(self.store.root)
+            if api_key:
+                probe_config["apiKey"] = api_key
+            try:
+                probe_model(
+                    probe_config,
+                    timeout=min(20, self.settings.model_timeout_seconds),
+                )
+            except Exception as error:
+                raise APIError(f"模型连接测试失败：{error}", 502) from error
+            return {"ok": True, "model": model, "message": "模型连接成功"}
         with self.store.tx() as db:
             if path == "user":
                 role = data.get("role", "HR")
@@ -747,25 +769,28 @@ class Service:
             if path == "config":
                 config = self.store.get(db, "config", "system")
                 url = str(data.get("modelUrl", "")).rstrip("/")
-                p = urllib.parse.urlparse(url)
-                if (
-                    p.scheme not in ["http", "https"]
-                    or p.hostname not in ["127.0.0.1", "localhost", "::1"]
-                    or p.username
-                    or p.password
-                ):
-                    raise APIError("模型接口仅允许本机 HTTP(S) 地址")
-                if data.get("mode") not in ["rules", "model"]:
-                    raise APIError("评分模式无效")
-                if data.get("mode") == "model" and not data.get("model"):
+                if not model_url_allowed(url):
+                    raise APIError("模型接口不在允许的本机端点白名单中")
+                mode = data.get("mode", config.get("mode", "rules"))
+                extraction_mode = data.get(
+                    "extractionMode",
+                    config.get("extractionMode", config.get("mode", "rules")),
+                )
+                if mode not in ["rules", "model"]:
+                    raise APIError("岗位匹配模式无效")
+                if extraction_mode not in ["rules", "model"]:
+                    raise APIError("简历提取模式无效")
+                if (mode == "model" or extraction_mode == "model") and not data.get("model"):
                     raise APIError("请填写真实本地模型名")
                 config.update(
-                    mode=data["mode"],
+                    mode=mode,
+                    extractionMode=extraction_mode,
                     modelUrl=url,
                     model=str(data.get("model", "")),
                     ocr=bool(data.get("ocr", True)),
                 )
                 config = self.store.put(db, "config", config, data.get("rev"))
+                save_model_key(self.store.root, data.get("apiKey", ""))
                 self.store.audit(db, user, "保存本地模型与 OCR 配置")
                 return config
         raise APIError("管理接口不存在", 404)
@@ -807,7 +832,7 @@ class Service:
         self.need(user, "admin")
         with self.store.tx() as db:
             self.store.audit(db, user, "生成一致性工作区备份")
-            records = [dict(r) for r in db.execute("SELECT * FROM records")]
+            records = [dict(r) for r in db.execute("SELECT * FROM records WHERE kind!='views'")]
             fileids = set()
             for r in records:
                 d = json.loads(r["data"])
@@ -852,6 +877,8 @@ class Service:
         }
         checked = []
         for r in b["records"]:
+            if r["kind"] == "views":
+                continue
             d = json.loads(r["data"])
             if r["kind"] not in allowed or d.get("id") != r["id"] or int(r["rev"]) < 1:
                 raise APIError("备份实体无效")
@@ -886,6 +913,8 @@ class Service:
             db.execute("DELETE FROM users")
             db.execute("DELETE FROM audit")
             for r in b["records"]:
+                if r["kind"] == "views":
+                    continue
                 db.execute(
                     "INSERT INTO records VALUES(?,?,?,?)", (r["kind"], r["id"], r["rev"], r["data"])
                 )
@@ -961,6 +990,24 @@ class Service:
             should_stop=self.stop.is_set,
         )
         fields, evidence = parse_fields(pages)
+        model_warning = ""
+        parser_mode = "rules"
+        if config.get("extractionMode", config.get("mode")) == "model":
+            try:
+                extracted, model_evidence = model_fields(
+                    pages,
+                    config | {"apiKey": read_model_key(self.store.root)},
+                    timeout=self.settings.model_timeout_seconds,
+                )
+                fields.update(extracted)
+                evidence.update(model_evidence)
+                parser_mode = "model"
+            except Exception as error:
+                model_warning = (
+                    "本地模型填表未完成，已保留规则结果，可重新提取：" + str(error)[:250]
+                )
+        if self.stop.is_set():
+            raise InterruptedError("服务停止，解析任务重新排队")
         with self.store.tx() as db:
             task = self.store.get(db, "imports", task["id"])
             duplicates = duplicate_candidates(
@@ -976,6 +1023,8 @@ class Service:
                 evidence=evidence,
                 pages=pages,
                 ocr=ocr,
+                parserMode=parser_mode,
+                modelWarning=model_warning,
                 duplicates=duplicates,
                 finished=utc(),
                 error="",
@@ -999,7 +1048,7 @@ class Service:
                     model_results = model_dimensions(
                         c,
                         task["versionSnapshot"],
-                        config,
+                        config | {"apiKey": read_model_key(self.store.root)},
                         timeout=self.settings.model_timeout_seconds,
                     )
                 result = score(c, task["versionSnapshot"], snap["resume"], model_results)

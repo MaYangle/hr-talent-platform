@@ -9,6 +9,10 @@ from pathlib import Path
 from .config import Settings
 from .domain import uid, utc
 
+DEFAULT_MODEL = "Qwen/Qwen3.8-27B"
+DEFAULT_MODEL_URL = "http://172.30.0.101:20001/v1"
+PREVIOUS_MODEL_URL = "http://127.0.0.1:11434/v1"
+
 
 class Conflict(Exception):
     pass
@@ -55,6 +59,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,time TEXT NOT NULL,actor_id TEXT,actor TEXT,action TEXT,entity TEXT,detail TEXT);
             INSERT OR IGNORE INTO migrations VALUES(1,CURRENT_TIMESTAMP);
             """)
+            db.execute("DELETE FROM records WHERE kind='views'")
             # A claimed task is requeued on process restart; completed items remain intact.
             for kind in ["imports", "runs"]:
                 for r in self.all(db, kind):
@@ -69,11 +74,38 @@ class Store:
                     {
                         "id": "system",
                         "mode": "rules",
-                        "modelUrl": "http://127.0.0.1:11434/v1",
-                        "model": "",
+                        "extractionMode": "model",
+                        "modelUrl": DEFAULT_MODEL_URL,
+                        "model": DEFAULT_MODEL,
                         "ocr": True,
+                        "modelDefaultsVersion": 2,
                     },
                 )
+            else:
+                config = self.get(db, "config", "system")
+                defaults_version = config.get("modelDefaultsVersion", 0)
+                if defaults_version < 1:
+                    using_previous_defaults = config.get("modelUrl") in [
+                        None,
+                        "",
+                        PREVIOUS_MODEL_URL,
+                    ] and not config.get("model")
+                    if not config.get("model"):
+                        config["model"] = DEFAULT_MODEL
+                    if config.get("modelUrl") in [None, "", PREVIOUS_MODEL_URL]:
+                        config["modelUrl"] = DEFAULT_MODEL_URL
+                    if using_previous_defaults and "extractionMode" not in config:
+                        config["extractionMode"] = "model"
+                    defaults_version = 1
+                if defaults_version < 2:
+                    if (
+                        config.get("modelUrl") == DEFAULT_MODEL_URL
+                        and config.get("model") == DEFAULT_MODEL
+                        and config.get("extractionMode") == "rules"
+                    ):
+                        config["extractionMode"] = "model"
+                    config["modelDefaultsVersion"] = 2
+                    self.put(db, "config", config, config["rev"])
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30, factory=ClosingConnection)

@@ -361,7 +361,7 @@ h3 {
 .screen-layout {
   display: grid;
   grid-template-columns: 12cqw 1fr;
-  height: calc(100% - 2.2cqw);
+  height: 100%;
 }
 .sidebar {
   background: var(--navy);

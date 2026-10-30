@@ -211,7 +211,6 @@ def handler_class(service, web_root=None):
                     "upload": service.upload,
                     "adopt": service.adopt_resume,
                     "run": service.create_run,
-                    "view": service.save_view,
                     "export": service.export,
                     "restore": service.restore,
                 }

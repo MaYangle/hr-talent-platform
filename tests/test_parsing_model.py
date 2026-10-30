@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -10,7 +11,7 @@ from unittest.mock import patch
 from docx import Document
 from pypdf import PdfWriter
 
-from talent_hub.model import model_dimensions
+from talent_hub.model import model_dimensions, model_fields, model_url_allowed, probe_model
 from talent_hub.parsing import extract, validate_file
 
 
@@ -103,3 +104,78 @@ class ModelContractTests(unittest.TestCase):
     def test_valid_response_is_parsed_without_external_service(self):
         row = {"criterion_id": "sql", "status": "MET", "level": 100, "quote": "SQL"}
         self.assertEqual(self.call_with([row]), [row])
+
+    def test_resume_model_extracts_title_name_with_original_line_evidence(self):
+        pages = [{"page": 1, "text": "Alex Chen | Data Analyst\nFive years of experience"}]
+        rows = {
+            "name": {
+                "value": "Alex Chen",
+                "page": 1,
+                "line": 1,
+                "quote": "Alex Chen | Data Analyst",
+            }
+        }
+        with patch("talent_hub.model.urllib.request.build_opener") as factory:
+            factory.return_value.open.return_value = self.output(rows)
+            fields, evidence = model_fields(pages, self.config)
+        self.assertEqual(fields, {"name": "Alex Chen"})
+        self.assertEqual(evidence["name"]["line"], 1)
+        self.assertFalse(evidence["name"]["confirmed"])
+
+    def test_resume_model_rejects_invented_values_locations_and_unsupported_fields(self):
+        pages = [{"page": 1, "text": "Alex Chen | Data Analyst"}]
+        rows = {
+            "name": {"value": "Invented", "page": 1, "line": 1, "quote": pages[0]["text"]},
+            "city": {"value": "Paris", "page": 1, "line": 1, "quote": "Paris"},
+            "role": {"value": "Data Analyst", "page": [], "line": 1, "quote": pages[0]["text"]},
+            "verified": {"value": "true", "page": 1, "line": 1, "quote": pages[0]["text"]},
+        }
+        with patch("talent_hub.model.urllib.request.build_opener") as factory:
+            factory.return_value.open.return_value = self.output(rows)
+            self.assertEqual(model_fields(pages, self.config), ({}, {}))
+
+    def test_resume_model_rejects_external_endpoint(self):
+        with patch("talent_hub.model.urllib.request.build_opener") as factory:
+            with self.assertRaises(ValueError):
+                model_fields([], self.config | {"modelUrl": "https://provider.invalid/v1"})
+            factory.assert_not_called()
+
+    def test_explicit_private_model_endpoint_is_narrowly_allowlisted(self):
+        self.assertTrue(model_url_allowed("http://172.30.0.101:20001/v1"))
+        for url in [
+            "http://172.30.0.101:20002/v1",
+            "http://172.30.0.101:20001/admin",
+            "https://172.30.0.101:20001/v1",
+            "http://172.30.0.102:20001/v1",
+            "http://172.30.0.101:20001/v1?redirect=example.invalid",
+        ]:
+            with self.subTest(url=url):
+                self.assertFalse(model_url_allowed(url))
+
+    def test_model_probe_sends_only_a_tiny_connection_prompt(self):
+        response = io.BytesIO(json.dumps({"choices": [{"message": {"content": "OK"}}]}).encode())
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("talent_hub.model.urllib.request.build_opener") as factory,
+        ):
+            factory.return_value.open.return_value = response
+            self.assertEqual(probe_model(self.config), {"ok": True})
+        request = factory.return_value.open.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertEqual(payload["model"], "unit-protocol")
+        self.assertEqual(payload["max_tokens"], 8)
+        self.assertNotIn("resume", json.dumps(payload))
+        self.assertEqual(factory.return_value.open.call_args.kwargs["timeout"], 15)
+
+    def test_model_probe_explains_authentication_failure_without_leaking_details(self):
+        error = urllib.error.HTTPError(
+            self.config["modelUrl"] + "/chat/completions",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(b"not exposed"),
+        )
+        with patch("talent_hub.model.urllib.request.build_opener") as factory:
+            factory.return_value.open.side_effect = error
+            with self.assertRaisesRegex(ValueError, "HTTP 401.*TALENT_MODEL_API_KEY"):
+                probe_model(self.config)

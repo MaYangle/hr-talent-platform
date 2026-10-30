@@ -8,6 +8,7 @@ import {
   table,
   input,
   saveDownload,
+  saveCsv,
 } from "./lib/ui.js";
 const $ = (s) => document.querySelector(s),
   $$ = (s) => [...document.querySelectorAll(s)];
@@ -75,7 +76,7 @@ const RUNSTATE = {
 };
 let S = null,
   csrf = "",
-  route = "dashboard",
+  route = "candidates",
   routeId = "",
   profileTab = "resume",
   list = {
@@ -176,6 +177,8 @@ function formError(e) {
 function formHandler(selector, fn) {
   $(selector).onsubmit = async (e) => {
     e.preventDefault();
+    if (e.target.dataset.submitting === "true") return;
+    e.target.dataset.submitting = "true";
     const b = e.target.querySelector("button[type=submit],button.primary");
     if (b) b.disabled = true;
     try {
@@ -183,6 +186,7 @@ function formHandler(selector, fn) {
     } catch (e) {
       formError(e);
     } finally {
+      e.target.dataset.submitting = "false";
       if (b) b.disabled = false;
     }
   };
@@ -195,10 +199,103 @@ function usersOptions() {
 const endForm = (label = "保存") =>
   `<div class="inline-error" id="formError"></div><div class="actions"><button type="submit" class="btn primary">${label}</button></div>`;
 
+const requiredProfile = [
+  "name",
+  "phone",
+  "email",
+  "city",
+  "targetCity",
+  "targetRole",
+  "years",
+  "education",
+  "english",
+];
+function profileFields(values, includeText = false) {
+  const groups = [
+    [
+      "联系与求职意向",
+      ["name", "phone", "email", "city", "targetCity", "targetRole"],
+    ],
+    [
+      "任职与能力",
+      ["company", "role", "years", "education", "english", "skills"],
+    ],
+    [
+      "补充信息（选填）",
+      [
+        "industry",
+        "monthly",
+        "annual",
+        "source",
+        ...(includeText ? ["text"] : []),
+      ],
+    ],
+  ];
+  return groups
+    .map(
+      ([label, keys], index) =>
+        `<details class="profile-section wide" ${index < 2 ? "open" : ""}><summary>${label}</summary><div class="form-grid">${keys.map((key) => input(key, F[key] + (requiredProfile.includes(key) ? " *" : ""), values[key] ?? "", key === "text" ? "textarea" : key === "years" ? "number" : "text", key === "source" ? [...new Set(["本地上传", "招聘平台", "员工推荐", "其他", values.source].filter(Boolean))] : null, key === "text")).join("")}</div></details>`,
+    )
+    .join("");
+}
+function bindProfileQuality(selector) {
+  const form = $(selector);
+  const summary = document.createElement("p");
+  summary.className = "profile-quality wide";
+  summary.setAttribute("role", "status");
+  form.prepend(summary);
+  const update = () => {
+    const values = Object.fromEntries(new FormData(form));
+    const keys = [
+      ...requiredProfile,
+      ...(values.employment === "未任职" ? [] : ["company", "role"]),
+    ];
+    const missing = keys.filter((key) => {
+      const value = String(values[key] || "").trim();
+      return (
+        !value ||
+        /^(未知|待补全|待确认|未填写|未提供|不详|暂无|n\/a|unknown|-|null|none)$/i.test(
+          value,
+        ) ||
+        (key === "phone" &&
+          !/^\+?\d{7,15}$/.test(value.replace(/[^\d+]/g, ""))) ||
+        (key === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) ||
+        (key === "years" &&
+          (!Number.isFinite(Number(value)) ||
+            Number(value) < 0 ||
+            Number(value) > 60))
+      );
+    });
+    summary.textContent = missing.length
+      ? `核实前需补全或修正 ${missing.length} 项：${missing.map((key) => F[key]).join("、")}。仍可保存为待补全档案。`
+      : "必需字段已填写，请对照原文确认后勾选核实。";
+    keys.forEach((key) => {
+      const field = form.elements.namedItem(key);
+      field?.setAttribute("aria-invalid", String(missing.includes(key)));
+    });
+  };
+  form.addEventListener("input", update);
+  form.addEventListener("change", update);
+  form.addEventListener("click", (event) => {
+    const field = event.target.closest("[name]");
+    if (!field) return;
+    const evidence = $(`[data-evidence-field="${field.name}"]`);
+    if (evidence) {
+      $$(".evidence-item.highlight").forEach((element) =>
+        element.classList.remove("highlight"),
+      );
+      evidence.classList.add("highlight");
+      evidence.scrollIntoView({ block: "nearest" });
+    }
+  });
+  update();
+}
+
 async function showLogin() {
   const status = await api("status");
   const setup = status.setupRequired;
   $("#navigation").innerHTML = "";
+  $("#sectionNavigation").innerHTML = "";
   $("#user").textContent = "请登录团队工作区";
   $("#logout").hidden = true;
   $("#refresh").hidden = true;
@@ -207,6 +304,7 @@ async function showLogin() {
   formHandler("#loginForm", async (v) => {
     const result = await api(setup ? "setup" : "login", v);
     csrf = result.csrf;
+    location.hash = "candidates";
     await sync();
   });
 }
@@ -215,43 +313,65 @@ function render() {
   $("#logout").hidden = false;
   $("#refresh").hidden = false;
   [route, routeId = ""] = location.hash.slice(1).split("/");
-  route = route || "dashboard";
-  const routes = [
-    ["dashboard", "▦　工作台"],
-    ["candidates", "▤　人才库"],
+  route = route || "candidates";
+  if (["jobs", "matching", "pipeline", "interviews"].includes(route)) {
+    location.replace("#recruitment/" + route + (routeId ? "/" + routeId : ""));
+    return;
+  }
+  const recruiting = [
     ...(can("write")
       ? [
-          ["imports", "⇧　简历导入"],
-          ["jobs", "▣　岗位与 JD"],
+          ["jobs", "岗位"],
+          ["matching", "匹配"],
         ]
       : []),
-    ...(can("pipeline") ? [["pipeline", "◷　岗位流程"]] : []),
-    ...(can("write") ? [["matching", "◎　岗位匹配"]] : []),
-    ["interviews", "◷　面试安排"],
-    ...(S.user.role !== "面试官" ? [["analytics", "▦　招聘运营"]] : []),
+    ...(can("pipeline") ? [["pipeline", "跟进"]] : []),
+    ["interviews", "面试"],
+    ...(S.user.role !== "面试官" ? [["analytics", "统计"]] : []),
+  ];
+  const recruitingActive = route === "recruitment" || route === "analytics";
+  const recruitmentTab = recruiting.some(
+    ([path]) => path !== "analytics" && path === routeId,
+  )
+    ? routeId
+    : recruiting[0][0];
+  const routes = [
+    ["candidates", "▤　人才库"],
+    ...(can("write") ? [["imports", "⇧　简历导入"]] : []),
+    ["recruitment", "▣　招聘"],
     ["settings", "⚙　系统设置"],
   ];
   $("#navigation").innerHTML = routes
     .map(
       ([r, l]) =>
-        `<button class="nav ${route === r || (r === "candidates" && route === "profile") ? "sel" : ""}" data-nav="${r}">${l}</button>`,
+        `<button class="nav ${route === r || (r === "candidates" && route === "profile") || (r === "recruitment" && recruitingActive) ? "sel" : ""}" data-nav="${r}">${l}</button>`,
     )
     .join("");
-  $("#address").textContent = "团队人才库 / " + route;
+  $("#sectionNavigation").innerHTML = recruitingActive
+    ? recruiting
+        .map(
+          ([path, label]) =>
+            `<button class="${(route === "analytics" ? path === route : path === recruitmentTab) ? "sel" : ""}" data-nav="${path === "analytics" ? path : "recruitment/" + path}" ${(route === "analytics" ? path === route : path === recruitmentTab) ? 'aria-current="page"' : ""}>${label}</button>`,
+        )
+        .join("")
+    : "";
+  if (route === "recruitment") routeId = location.hash.split("/")[2] || "";
   const handler = {
-    dashboard: dashboard,
     candidates: candidates,
     profile: profile,
     imports: importsPage,
-    jobs: jobsPage,
-    pipeline: pipelinePage,
-    matching: matchingPage,
-    interviews: interviewsPage,
+    recruitment: () =>
+      ({
+        jobs: jobsPage,
+        pipeline: pipelinePage,
+        matching: matchingPage,
+        interviews: interviewsPage,
+      })[recruitmentTab](),
     analytics: analytics,
     settings: settings,
   };
   if (!handler[route]) {
-    nav("dashboard");
+    nav("candidates");
     return;
   }
   Promise.resolve(handler[route]()).catch((e) => {
@@ -259,7 +379,7 @@ function render() {
     $("#workspace").innerHTML = title(
       "暂时无法打开",
       e.message,
-      button("返回工作台", "home"),
+      button("返回人才库", "candidates"),
     );
   });
 }
@@ -279,33 +399,8 @@ function appRows(rows) {
     esc(uname(a.ownerId)),
     esc(a.nextAction || a.result || "已结案"),
     `<span class="${overdue(a.due, a.stage) ? "overdue" : ""}">${fmt(a.due)}${overdue(a.due, a.stage) ? " · 已逾期" : ""}</span>`,
-    button("跟进 / 推进", "editApplication", a.id),
+    `<div class="team-actions">${button("跟进 / 推进", "editApplication", a.id)}${can("interview") && !["已录用", "已结束"].includes(a.stage) ? button("安排面试", "scheduleApplication", a.id) : ""}</div>`,
   ]);
-}
-function dashboard() {
-  const mine = S.applications.filter(
-    (a) => a.ownerId === S.user.id && !["已录用", "已结束"].includes(a.stage),
-  );
-  const late = mine.filter((a) => overdue(a.due, a.stage));
-  const feedback = S.interviews.filter(
-    (i) =>
-      (i.ownerId === S.user.id || i.interviewerId === S.user.id) &&
-      !["已完成", "已取消"].includes(i.status),
-  );
-  const failed = S.imports.filter((i) => i.state === "failed");
-  $("#workspace").innerHTML =
-    title(
-      "工作台",
-      "按责任人与截止日期处理今天的招聘工作",
-      button("刷新队列", "refresh"),
-    ) +
-    `<div class="team-kpis"><button class="team-kpi" data-action="myQueue">我的进行中待办<b>${mine.length}</b>按岗位独立跟进</button><button class="team-kpi" data-action="lateQueue">我的逾期待办<b>${late.length}</b>按截止时间升序</button><button class="team-kpi" data-nav="interviews">待收集面试反馈<b>${feedback.length}</b>其中逾期 ${feedback.filter((i) => overdue(i.due, i.status)).length} 场</button><button class="team-kpi" data-nav="${can("write") ? "imports" : "candidates"}">${can("write") ? "失败 / 待核对导入" : "可访问人才"}<b>${can("write") ? failed.length + " / " + S.imports.filter((i) => ["review", "duplicate"].includes(i.state)).length : S.candidates.length}</b>${can("write") ? "原件保留，可继续处理" : "权限范围内的共享档案"}</button></div>` +
-    `<div class="panel"><h3>我的下一步动作</h3>${can("pipeline") ? table(["人才", "岗位", "阶段", "负责人", "下一步", "截止时间", "操作"], appRows(mine.sort((a, b) => a.due.localeCompare(b.due)))) : '<p class="hint">当前角色可从面试安排中填写本人负责的面试反馈。</p>'}</div><div class="panel section-gap"><h3>面试与反馈提醒</h3>${interviewTable(feedback.slice(0, 10))}</div>`;
-  if (!S.candidates.length && can("write"))
-    $("#workspace").insertAdjacentHTML(
-      "afterbegin",
-      `<section class="panel onboarding"><h3>从第一份人才资料开始</h3><p class="hint">工作区尚无人才档案。上传获得授权的简历，核对字段后即可检索、建立岗位流程及安排面试。</p><div class="team-actions">${button("上传第一份简历", "upload", "", true)}${button("手工新建档案", "editCandidate")}${can("admin") ? button("创建团队账号", "editUser") : ""}</div></section>`,
-    );
 }
 function filteredCandidates() {
   let cs = S.candidates.filter((c) => !list.ids || list.ids.includes(c.id));
@@ -398,13 +493,26 @@ function candidates() {
       )
       .join(
         "",
-      )}</select><select id="candidateSize" aria-label="每页数量">${[10, 20, 50, 100].map((n) => `<option ${list.size === n ? "selected" : ""}>${n}</option>`).join("")}</select><select id="savedView" aria-label="常用视图"><option value="">个人 / 团队常用视图</option>${S.views.map((v) => `<option value="${v.id}">${esc(v.name)} · ${v.shared ? "团队" : "个人"}</option>`).join("")}</select>${button("保存视图", "saveView")}</div><div class="hint">${Object.entries(
+      )}</select><select id="candidateSize" aria-label="每页数量">${[10, 20, 50, 100].map((n) => `<option ${list.size === n ? "selected" : ""}>${n}</option>`).join("")}</select></div><div class="hint">${Object.entries(
       list,
     )
       .filter(
         ([k, v]) => !["page", "size", "sort", "q", "ids"].includes(k) && v,
       )
-      .map(([k, v]) => esc(k + ": " + v))
+      .map(([k, v]) =>
+        esc(
+          ({
+            incomplete: "仅待补全",
+            unverified: "仅待核实",
+            updatedFrom: "更新日期起",
+            updatedTo: "更新日期止",
+            resumeFrom: "简历日期起",
+            resumeTo: "简历日期止",
+            years: "最低年限",
+            ...F,
+          }[k] || k) + (typeof v === "boolean" ? "" : "：" + v),
+        ),
+      )
       .join(" · ")}${list.ids ? " · 来自指标下钻" : ""}</div>` +
     table(
       [
@@ -450,13 +558,6 @@ function candidates() {
     list.page = 1;
     candidates();
   };
-  $("#savedView").onchange = (e) => {
-    const v = find("views", e.target.value);
-    if (v) {
-      list = { ...list, ...v.filters, sort: v.sort, size: v.pageSize, page: 1 };
-      candidates();
-    }
-  };
 }
 function filterCandidates() {
   openModal(
@@ -478,46 +579,13 @@ function filterCandidates() {
     candidates();
   });
 }
-function saveView() {
-  openModal(
-    "保存常用工作视图",
-    `<form id="viewForm"><div class="form-grid">${input("name", "视图名称")}<label class="checkbox-label"><input type="checkbox" name="shared" ${can("write") ? "" : "disabled"}>保存为团队视图（否则仅本人可见）</label></div>${endForm("保存视图")}</form>`,
-  );
-  formHandler("#viewForm", async (v) => {
-    const { page, size, sort, ...filters } = list;
-    await api("view", {
-      name: v.name,
-      shared: v.shared === "on",
-      filters,
-      sort,
-      pageSize: size,
-    });
-    closeModal();
-    await sync();
-    notify("常用视图已保存到服务端");
-  });
-}
 async function editCandidate(id) {
   const c = id ? await api("detail/candidate/" + id) : {};
   openModal(
     id ? "编辑并核实档案" : "新建人才档案",
-    `<form id="candidateForm"><p class="modal-note">占位词、无效联系方式不算完整。未任职时无需填写当前公司与岗位。性别不收集、不筛选、不参与匹配。</p><div class="form-grid">${Object.entries(
-      F,
-    )
-      .map(([k, l]) =>
-        input(
-          k,
-          l,
-          c[k] ?? "",
-          k === "text" ? "textarea" : k === "years" ? "number" : "text",
-          k === "source" ? ["本地上传", "招聘平台", "员工推荐", "其他"] : null,
-          k === "text",
-        ),
-      )
-      .join(
-        "",
-      )}${input("employment", "当前任职状态", c.employment || "在职", "text", ["在职", "未任职"])}${input("status", "人才库状态", c.status || "新入库", "text", statuses)}<label class="checkbox-label wide"><input type="checkbox" name="verified" ${c.verified ? "checked" : ""}>我已核对这些字段；全部必需信息有效时标记“已核实”</label></div>${endForm("保存档案")}</form>`,
+    `<form id="candidateForm"><p class="modal-note">* 为必需信息；在职时还需填写当前公司和岗位。</p><div class="form-grid">${profileFields(c, true)}${input("employment", "当前任职状态", c.employment || "在职", "text", ["在职", "未任职"])}${input("status", "人才库状态", c.status || "新入库", "text", statuses)}<label class="checkbox-label wide"><input type="checkbox" name="verified" ${c.verified ? "checked" : ""}>我已核对这些字段；全部必需信息有效时标记“已核实”</label></div>${endForm("保存档案")}</form>`,
   );
+  bindProfileQuality("#candidateForm");
   formHandler("#candidateForm", async (v) => {
     await api("candidate", {
       ...v,
@@ -552,7 +620,10 @@ async function profile() {
           (can("salary") ||
             !["monthly", "annual", "phone", "email"].includes(k)),
       )
-      .map(([k, l]) => `<dt>${esc(l)}</dt><dd>${esc(c[k] || "待补全")}</dd>`)
+      .map(
+        ([k, l]) =>
+          `<dt>${esc(l)}</dt><dd>${esc(c[k] || (requiredProfile.includes(k) || (["company", "role"].includes(k) && c.employment !== "未任职") ? "待补全" : "未填写（选填）"))}</dd>`,
+      )
       .join(
         "",
       )}</dl><p class="hint">薪资独立选填，人民币税前；年薪为年度总包。${can("salary") ? "" : "当前角色隐藏联系方式、薪资和原件。"}</p>${c.missing?.length ? `<p class="hint overdue">缺失或无效：${c.missing.map((k) => esc(F[k] || k)).join("、")}</p>` : ""}</div><div class="panel"><div class="section-tabs">${[
@@ -573,7 +644,7 @@ async function profile() {
     )
       .map(
         ([k, e]) =>
-          `<div class="evidence-item"><b>${esc(F[k] || k)}</b> · ${tag(e.confirmed ? "已核对" : "待核对", e.confirmed ? "" : "amber")}<br>${esc(e.quote)}${e.corrected ? "<br>HR 核实修正值：" + esc(e.confirmedValue) : ""}<br><small>第 ${e.page} 页 / 段落组，第 ${e.line} 行</small></div>`,
+          `<div class="evidence-item"><b>${esc(F[k] || k)}</b> · ${tag(e.confirmed ? "已核对" : c.verified ? "提取证据" : "待核对", e.confirmed || c.verified ? "" : "amber")}<br>${esc(e.quote)}${e.corrected ? "<br>HR 核实修正值：" + esc(e.confirmedValue) : ""}<br><small>第 ${e.page} 页 / 段落组，第 ${e.line} 行</small></div>`,
       )
       .join("")}`;
   if (profileTab === "pipeline")
@@ -691,9 +762,12 @@ function importsPage() {
           tag(
             t.parsed ? "已解析" : t.state === "failed" ? "失败" : "等待中",
             t.state === "failed" ? "amber" : "gray",
-          ),
+          ) +
+            (t.parsed
+              ? `<small style="display:block">${t.parserMode === "model" ? "本地模型填表" : "规则提取"}</small>`
+              : ""),
           tag(TASK[t.state] || t.state, t.state === "duplicate" ? "amber" : ""),
-          `<span class="${t.error ? "overdue" : ""}">${esc(t.error || t.duplicates?.map((d) => d.reasons.join(" / ")).join("；") || "—")}</span>`,
+          `<span class="${t.error || t.modelWarning ? "overdue" : ""}">${esc(t.error || t.modelWarning || t.duplicates?.map((d) => d.reasons.join(" / ")).join("；") || "—")}</span>`,
           ["review", "duplicate", "failed"].includes(t.state)
             ? button(
                 t.state === "failed" ? "恢复处理" : "核对 / 比较",
@@ -769,18 +843,11 @@ async function reviewImport(id) {
   const failure = t.state === "failed";
   openModal(
     failure ? "恢复失败导入" : "核对提取字段与疑似重复",
-    `<p class="modal-note">${esc(t.name)} · ${TASK[t.state]}${t.ocr ? " · 本地 OCR 来源" : ""}</p>${failure ? `<p class="inline-error">${esc(t.error)}</p><div class="team-actions">${button("重试解析", "retryImport", id)}<a class="btn" href="/api/file/import/${id}" target="_blank" rel="noopener">查看已保存原件</a></div>` : ""}<form id="reviewForm"><div class="evidence-grid"><div><h3>解析值 / 人工修正</h3><div class="team-form">${Object.entries(
-      F,
-    )
-      .filter(([k]) => k !== "text")
-      .map(([k, l]) => input(k, l, t.fields?.[k] || ""))
-      .join(
-        "",
-      )}${input("employment", "当前任职状态", "在职", "text", ["在职", "未任职"])}<label class="checkbox-label"><input type="checkbox" name="verified">已逐项核实（缺项仍为待补全）</label></div></div><div><h3>原文与字段位置</h3><div class="evidence-list">${
+    `<p class="modal-note">${esc(t.name)} · ${TASK[t.state]} · ${t.parserMode === "model" ? "本地模型填表" : "规则提取"}${t.ocr ? " · 本地 OCR 来源" : ""}</p>${t.modelWarning ? `<p class="inline-error" role="status">${esc(t.modelWarning)}</p>` : ""}${failure ? `<p class="inline-error">${esc(t.error)}</p><div class="team-actions">${button("重试解析", "retryImport", id)}<a class="btn" href="/api/file/import/${id}" target="_blank" rel="noopener">查看已保存原件</a></div>` : `<div class="team-actions">${button("重新提取", "reparseImport", id)}</div>`}<form id="reviewForm"><div class="evidence-grid"><div><h3>解析值 / 人工修正</h3><div class="team-form">${profileFields(t.fields || {})}${input("employment", "当前任职状态", "在职", "text", ["在职", "未任职"])}<label class="checkbox-label"><input type="checkbox" name="verified">已逐项核实（缺项仍为待补全）</label></div></div><div><h3>原文与字段位置</h3><div class="evidence-list">${
       Object.entries(t.evidence || {})
         .map(
           ([k, e]) =>
-            `<div class="evidence-item"><b>${esc(F[k] || k)}</b>：${esc(e.raw)}<br>${esc(e.quote)}<br><button type="button" class="detail-link" data-locate="${e.page}-${e.line}">第 ${e.page} 页 / 段落组，第 ${e.line} 行</button></div>`,
+            `<div class="evidence-item" data-evidence-field="${esc(k)}"><b>${esc(F[k] || k)}</b> ${tag(e.method === "model" ? "模型提取" : "规则提取", "gray")}<br>${esc(e.quote)}<br><button type="button" class="detail-link" data-locate="${e.page}-${e.line}">第 ${e.page} 页 / 段落组，第 ${e.line} 行</button></div>`,
         )
         .join("") || "未获得字段证据，可对照原始附件手工录入。"
     }</div><div class="raw-lines">${rawPages(t.pages)}</div></div></div>${
@@ -813,6 +880,7 @@ async function reviewImport(id) {
     true,
   );
   bindLocate();
+  bindProfileQuality("#reviewForm");
   formHandler("#reviewForm", async (v) => {
     const action = v.decision;
     delete v.decision;
@@ -871,12 +939,37 @@ function editJob(id) {
     `<form id="jobForm"><div class="form-grid">${input("title", "岗位名称", j.title || "")}${input("ownerId", "岗位负责人", j.ownerId || S.user.id, "text", usersOptions())}<label class="field wide">导入 JD（PDF / DOCX / TXT）<input type="file" id="jdFile" accept=".pdf,.docx,.txt"></label>${input("text", "JD 原文", v.text || "", "textarea", null, true)}</div><p class="hint" id="jdHint">请逐项确认要求值、是否硬性与权重；未提及的条件不要添加。权重自动按总和归一化。</p><div id="criteriaRows">${v.criteria.map(criterionRow).join("")}</div><button class="btn" type="button" id="addCriterion">＋ 添加岗位要求</button><label class="checkbox-label section-gap"><input type="checkbox" name="confirmed" required>我已确认岗位条件；发布后生成独立版本</label>${endForm("确认并发布版本")}</form>`,
     true,
   );
-  $("#addCriterion").onclick = () =>
+  const weights = document.createElement("p");
+  weights.className = "hint";
+  weights.id = "weightSummary";
+  $("#criteriaRows").after(weights);
+  const drawWeights = () => {
+    const rows = [...$("#criteriaRows").children];
+    const total = rows.reduce(
+      (sum, row) => sum + Number(row.querySelector(".c-weight").value || 0),
+      0,
+    );
+    weights.textContent =
+      "评分占比：" +
+      rows
+        .map(
+          (row) =>
+            `${row.querySelector(".c-value").value || "未命名条件"} ${total ? Math.round((Number(row.querySelector(".c-weight").value || 0) / total) * 1000) / 10 : 0}%`,
+        )
+        .join(" · ") +
+      "。硬性条件单独判断，不等于额外加分。";
+  };
+  $("#criteriaRows").oninput = drawWeights;
+  $("#addCriterion").onclick = () => {
     $("#criteriaRows").insertAdjacentHTML("beforeend", criterionRow());
+    drawWeights();
+  };
   $("#criteriaRows").onclick = (e) => {
     if (e.target.closest("[data-remove-row]"))
       e.target.closest(".criteria-row").remove();
+    drawWeights();
   };
+  drawWeights();
   $("#jdFile").onchange = async (e) => {
     if (!e.target.files[0]) return;
     try {
@@ -1010,7 +1103,7 @@ function interviewTable(rows) {
     rows.map((i) => [
       `${esc(jname(i.jobId))}<small style="display:block">第 ${i.round} 轮 · ${esc(i.type)}</small>`,
       `${esc(cname(i.candidateId))}<small style="display:block">${esc(uname(i.interviewerId))}</small>`,
-      `${fmt(i.time)}<small style="display:block">${i.duration} 分钟</small>`,
+      `${fmt(i.time)}<small style="display:block">${i.duration} 分钟 · ${esc(i.meetingMode || "方式待确认")}</small>${i.meetingLocation ? `<small style="display:block">${esc(i.meetingLocation)}</small>` : ""}`,
       `<span class="${overdue(i.due, i.status) ? "overdue" : ""}">${fmt(i.due)}${overdue(i.due, i.status) ? " · 反馈逾期" : ""}</span><small style="display:block">${esc(uname(i.ownerId))}</small>`,
       tag(i.status, i.status === "已完成" ? "" : "blue"),
       can("interview")
@@ -1055,7 +1148,7 @@ function interviewsPage() {
   $("#interviewStatus").onchange = draw;
   draw();
 }
-function editInterview(id) {
+function editInterview(id, applicationId = "") {
   const i = id ? find("interviews", id) : {};
   const apps = S.applications;
   if (!apps.length) {
@@ -1068,7 +1161,7 @@ function editInterview(id) {
     `<form id="interviewForm"><div class="form-grid">${input(
       "applicationId",
       "关联岗位候选人流程",
-      i.applicationId || apps[0].id,
+      i.applicationId || applicationId || apps[0].id,
       "text",
       apps.map((a) => ({
         value: a.id,
@@ -1076,6 +1169,40 @@ function editInterview(id) {
       })),
     )}${input("round", "轮次", i.round || 1, "number")}${input("type", "面试类型", i.type || "电话初筛", "text", ["电话初筛", "业务面试", "综合面试"])}${input("time", "面试开始时间", toLocal(i.time), "datetime-local")}${input("duration", "时长（分钟）", i.duration || 60, "number")}${input("interviewerId", "面试官", i.interviewerId || S.user.id, "text", usersOptions())}${input("ownerId", "反馈跟进负责人", i.ownerId || S.user.id, "text", usersOptions())}${input("due", "反馈截止时间", toLocal(i.due), "datetime-local")}${input("status", "当前状态", i.status || "已安排", "text", ["已安排", "待反馈", "已完成", "已取消"])}${["score", "communication", "expertise", "problemSolving"].map((k) => input(k, { score: "总体评价", communication: "沟通表达", expertise: "专业能力", problemSolving: "问题解决" }[k] + "（1–5，选填）", i[k] || "", "text", ["", "1", "2", "3", "4", "5"])).join("")}${input("feedback", "具体反馈与证据", i.feedback || "", "textarea", null, true)}${input("nextAction", "HR 汇总 / 下一步建议", i.nextAction || "", "textarea", null, true)}</div><p class="hint">1 需明显提升，3 基本符合岗位要求，5 有明确优秀表现；留空表示尚未评价。不会自动加入简历匹配分。</p>${endForm("保存面试安排 / 反馈")}</form>`,
   );
+  const form = $("#interviewForm");
+  const grid = form.querySelector(".form-grid");
+  const arrangement = document.createElement("details");
+  arrangement.className = "profile-section wide";
+  arrangement.open = !id;
+  arrangement.innerHTML =
+    "<summary>安排信息</summary><div class='form-grid'></div>";
+  const evaluation = document.createElement("details");
+  evaluation.className = "profile-section wide";
+  evaluation.open = !!id;
+  evaluation.innerHTML =
+    "<summary>评价与反馈</summary><div class='form-grid'></div>";
+  [...grid.children].forEach((field) => {
+    const name = field.querySelector("[name]")?.name;
+    const feedback = [
+      "status",
+      "score",
+      "communication",
+      "expertise",
+      "problemSolving",
+      "feedback",
+      "nextAction",
+    ].includes(name);
+    (feedback ? evaluation : arrangement)
+      .querySelector(".form-grid")
+      .append(field);
+  });
+  grid.append(arrangement, evaluation);
+  arrangement
+    .querySelector(".form-grid")
+    .insertAdjacentHTML(
+      "beforeend",
+      `${input("meetingMode", "面试方式", i.meetingMode || "待确认", "text", ["待确认", "电话", "视频", "现场"])}${input("meetingLocation", "地点 / 会议链接", i.meetingLocation || "")}`,
+    );
   if (readonly)
     for (const k of [
       "applicationId",
@@ -1087,8 +1214,20 @@ function editInterview(id) {
       "ownerId",
       "due",
       "nextAction",
-    ])
-      $("#interviewForm [name=" + k + "]").disabled = true;
+      "meetingMode",
+      "meetingLocation",
+    ]) {
+      const field = $("#interviewForm [name=" + k + "]");
+      field.disabled = true;
+      const group = field.closest("fieldset");
+      if (group) group.disabled = true;
+      field
+        .closest(".field")
+        .querySelectorAll("button")
+        .forEach((button) => {
+          button.disabled = true;
+        });
+    }
   formHandler("#interviewForm", async (v) => {
     const a = find("applications", v.applicationId || i.applicationId);
     await api("interview", {
@@ -1104,7 +1243,14 @@ function editInterview(id) {
     });
     closeModal();
     await sync();
-    notify("面试记录已保存，安排与反馈可在工作台跟进");
+    if (v.status === "已完成" && can("pipeline")) {
+      openModal(
+        "面试反馈已保存",
+        `<p>岗位阶段仍为“${esc(find("applications", a.id).stage)}”，人才库状态不变。</p><div class="team-actions">${button("继续更新岗位阶段", "editApplication", a.id, true)}<button class="btn" type="button" id="finishFeedback">完成</button></div>`,
+      );
+      $("#finishFeedback").onclick = closeModal;
+    }
+    notify("面试记录已保存");
   });
 }
 function matchingPage() {
@@ -1160,6 +1306,16 @@ function newRun(jobId = "") {
       { value: "pipeline", label: "已加入该岗位的已核实档案" },
     ])}</div><p class="modal-note">创建时固定 JD、规则、模型配置、候选人修订和选定简历版本。任务后台执行，可离开页面；历史结果不会随档案更新而变化。</p>${endForm("保存快照并开始后台匹配")}</form>`,
   );
+  const eligible = S.candidates.filter(
+    (candidate) => candidate.verified && !candidate.missing?.length,
+  );
+  const excluded = S.candidates.filter(
+    (candidate) => !eligible.includes(candidate),
+  );
+  const quality = document.createElement("details");
+  quality.className = "profile-section";
+  quality.innerHTML = `<summary>当前可匹配 ${eligible.length} 人 · 待处理 ${excluded.length} 人</summary>${excluded.map((candidate) => `<p>${esc(candidate.name)}：${esc(candidate.missing?.length ? candidate.missing.map((key) => F[key]).join("、") : "尚未人工核实")} ${button("补全 / 核实", "editCandidate", candidate.id)}</p>`).join("") || "所有可访问档案均符合当前匹配准入条件。"}`;
+  $("#runForm").prepend(quality);
   formHandler("#runForm", async (v) => {
     let ids = [];
     if (v.scope === "filtered") ids = filteredCandidates().map((c) => c.id);
@@ -1174,7 +1330,7 @@ function newRun(jobId = "") {
     const run = await api("run", { versionId: v.versionId, candidateIds: ids });
     closeModal();
     await sync(false);
-    nav("matching/" + run.id);
+    nav("recruitment/matching/" + run.id);
     notify("匹配任务已创建，输入快照已固定");
   });
 }
@@ -1184,7 +1340,7 @@ async function viewRun(id, inModal = true) {
   if (inModal) {
     openModal(
       "匹配结果 · " + currentRun.versionSnapshot.title,
-      '<div id="runContent"></div>',
+      '<div id="modalRunContent"></div>',
       true,
     );
   }
@@ -1201,27 +1357,34 @@ function sortedItems() {
 }
 function renderRun() {
   const r = currentRun;
-  if (!r || !$("#runContent")) return;
+  const content = $("#dialog").open ? $("#modalRunContent") : $("#runContent");
+  if (!r || !content) return;
   const items = sortedItems();
   activeMatch = Math.min(activeMatch, Math.max(0, items.length - 1));
   const summary = $("#run-status-" + r.id);
   if (summary)
     summary.innerHTML = `${tag(RUNSTATE[r.state] || r.state)} ${r.items.length} / ${r.scope}${r.errors.length ? " · 失败 " + r.errors.length : ""}`;
-  $("#runContent").innerHTML =
-    `<div class="snapshot">固定快照：JD v${r.versionSnapshot.number} · ${esc(r.ruleVersion)} · ${fmt(r.created)}<br>评分方式：${r.configSnapshot.mode === "model" ? "本地模型 " + esc(r.configSnapshot.model) : "本地证据规则"} · 完成 ${r.items.length}/${r.scope} · ${RUNSTATE[r.state] || r.state}</div><div class="task-progress"><i style="width:${r.scope ? ((r.items.length + r.errors.length) / r.scope) * 100 : 0}%"></i></div>${can("export") ? button("导出本次固定结果", "exportRun", r.id) : ""}<div class="team-grid section-gap"><div class="matchlist">${items.map((v, n) => `<button class="rank ${n === activeMatch ? "sel" : ""}" data-match-index="${n}" style="width:100%;text-align:left"><small>${n + 1}</small><span class="avatar">${esc(v.name[0])}</span><div class="body"><b>${esc(v.name)}</b><p>${esc(v.group)} · 覆盖 ${v.coverage}%${v.provisional ? " · 信息不足" : ""}</p></div><span class="score">${v.score ?? "—"}</span></button>`).join("") || '<div class="empty">后台正在逐人处理；可刷新查看进度。</div>'}</div><div id="matchDetail" class="result-panel"></div></div>${r.errors.length ? `<div class="section-gap"><h3>失败项（成功结果保留）</h3>${r.errors.map((e) => `<p class="hint overdue">${esc(e.name)}：${esc(e.error)}</p>`).join("")}${button("重试失败项", "retryRun", r.id)}</div>` : ""}`;
+  content.innerHTML = `<div class="snapshot">固定快照：JD v${r.versionSnapshot.number} · ${esc(r.ruleVersion)} · ${fmt(r.created)}<br>评分方式：${r.configSnapshot.mode === "model" ? "本地模型 " + esc(r.configSnapshot.model) : "本地证据规则"} · 完成 ${r.items.length}/${r.scope} · ${RUNSTATE[r.state] || r.state}</div><div class="task-progress"><i style="width:${r.scope ? ((r.items.length + r.errors.length) / r.scope) * 100 : 0}%"></i></div>${can("export") ? button("导出本次固定结果", "exportRun", r.id) : ""}<div class="team-grid section-gap"><div class="matchlist">${items.map((v, n) => `<button class="rank ${n === activeMatch ? "sel" : ""}" data-match-index="${n}" style="width:100%;text-align:left"><small>${n + 1}</small><span class="avatar">${esc(v.name[0])}</span><div class="body"><b>${esc(v.name)}</b><p>${esc(v.group)} · 覆盖 ${v.coverage}%${v.provisional ? " · 信息不足" : ""}</p></div><span class="score">${v.score ?? "—"}</span></button>`).join("") || '<div class="empty">后台正在逐人处理；可刷新查看进度。</div>'}</div><div id="matchDetail" class="result-panel"></div></div>${r.errors.length ? `<div class="section-gap"><h3>失败项（成功结果保留）</h3>${r.errors.map((e) => `<p class="hint overdue">${esc(e.name)}：${esc(e.error)}</p>`).join("")}${button("重试失败项", "retryRun", r.id)}</div>` : ""}`;
   function detail() {
     const v = items[activeMatch];
     if (!v) return;
-    $("#matchDetail").innerHTML =
+    content.querySelector("#matchDetail").innerHTML =
       `<h3>${esc(v.name)} · ${esc(v.group)}</h3><p class="hint">证据得分 ${v.score ?? "未知"} · 覆盖度 ${v.coverage}%${v.provisional ? " · 信息不足，暂定分数" : ""}<br>档案修订 ${v.candidateSnapshot.rev} · 简历版本 ${esc(v.resumeSnapshot?.name || "手工档案")}<br>未提及视为待确认，不视为明确不满足。</p>${v.dimensions.map((d) => `<div class="evidence-item"><b>${esc(KIND[d.kind])}：${esc(d.value)}</b> ${tag({ MET: "满足", PARTIAL: "部分满足", NOT_MET: "不满足", UNKNOWN: "待确认" }[d.status], d.status === "UNKNOWN" ? "amber" : d.status === "NOT_MET" ? "gray" : "")} ${tag(d.hard ? "硬性" : "优先", "blue")}<br>权重 ${d.weight} · 维度分 ${d.level ?? "未知"}<br>${esc(d.quote || "尚无可回溯证据，需进一步核实。")}${d.location ? `<br>第 ${d.location.page} 页 / 段落组，第 ${d.location.line} 行` : ""}</div>`).join("")}<div class="team-actions section-gap">${button("查看评分时原文", "snapshotResume", v.candidateId)}${button("当前人才档案", "profile", v.candidateId)}${can("pipeline") ? button("HR 决定加入岗位流程", "matchToPipeline", v.candidateId) : ""}</div>`;
   }
-  $$("[data-match-index]").forEach(
+  if (can("export"))
+    content
+      .querySelector("[data-action=exportRun]")
+      .insertAdjacentHTML(
+        "afterend",
+        button("导出明细 CSV", "exportRunCsv", r.id),
+      );
+  content.querySelectorAll("[data-match-index]").forEach(
     (b) =>
       (b.onclick = () => {
         activeMatch = Number(b.dataset.matchIndex);
-        $$("[data-match-index]").forEach((x) =>
-          x.classList.toggle("sel", x === b),
-        );
+        content
+          .querySelectorAll("[data-match-index]")
+          .forEach((x) => x.classList.toggle("sel", x === b));
         detail();
       }),
   );
@@ -1233,7 +1396,10 @@ async function analytics() {
     title(
       "招聘运营看板",
       "统一口径，支持按岗位、来源与入库时间队列复盘",
-      can("export") ? button("导出汇总", "exportMetrics") : "",
+      can("export")
+        ? button("导出汇总 CSV", "exportMetricsCsv") +
+            button("导出 JSON", "exportMetrics")
+        : "",
     ) +
     `<form class="filterbar" id="metricsForm">${input("start", "入库日期起", metricsFilter.start || "", "date")}${input("end", "入库日期止", metricsFilter.end || "", "date")}${input("source", "渠道", metricsFilter.source || "", "text", ["", ...new Set(S.candidates.map((c) => c.source).filter(Boolean))])}${input("jobId", "岗位", metricsFilter.jobId || "", "text", [{ value: "", label: "全部岗位" }, ...S.jobs.map((j) => ({ value: j.id, label: j.title }))])}<button class="btn primary" type="submit">应用筛选</button></form><div id="metricsContent" class="section-gap"></div>`;
   $("#metricsForm").onsubmit = async (e) => {
@@ -1252,6 +1418,10 @@ async function drawMetrics() {
   metrics = await api("metrics", metricsFilter);
   const m = metrics,
     max = Math.max(1, ...m.trends.map((x) => x[1]));
+  $("#metricsForm").setAttribute(
+    "aria-label",
+    "入库队列筛选；导入质量按上传日期统计",
+  );
   $("#metricsContent").innerHTML =
     `<div class="team-kpis"><button class="team-kpi" data-action="drillTotal">队列人才<b>${m.total}</b>点击下钻档案</button><div class="team-kpi">待补全 / 待核实<b>${m.incomplete} / ${m.unverified}</b>完整与核实独立统计</div><button class="team-kpi" data-action="drillOverdue">岗位逾期待办<b>${m.overdue}</b>点击下钻候选人</button><button class="team-kpi" data-action="drillFeedback">逾期面试反馈<b>${m.feedbackOverdue}</b>点击下钻候选人</button></div><div class="team-grid"><section class="panel"><h3>按入库月份新增趋势</h3><div class="trend">${m.trends.map(([k, n]) => `<div title="${k}：${n}"><small>${n}</small><i style="height:${(n / max) * 130}px"></i><span class="trend-label">${k}</span></div>`).join("") || '<p class="hint">此范围没有人才</p>'}</div></section><section class="panel"><h3>导入质量</h3><p>解析成功率：${m.parseRate === null ? "尚无已处理任务" : m.parseRate + "%"}<br>分母：${m.parseDenominator} 个已完成解析或失败的导入任务<br>疑似重复上传项：${m.duplicateCount}<br>统计时点：${fmt(m.asOf)}</p></section></div><section class="panel section-gap"><h3>岗位阶段人数、转化与停留</h3>${table(
       [
@@ -1280,7 +1450,11 @@ async function drawMetrics() {
         `${s.interviewRate}% / ${s.hireRate}%`,
         button("查看人才", "drillChannel", s.source),
       ]),
-    )}</section><p class="hint">统计口径：${esc(m.definitions)}</p>`;
+    )}</section><details class="profile-section"><summary>完整统计口径</summary><p class="hint">${esc(m.definitions)}</p></details>`;
+  $("#metricsContent").insertAdjacentHTML(
+    "afterbegin",
+    `<p class="profile-quality">统计时点：${esc(fmt(m.asOf))}。人才、渠道和阶段按人才入库日期形成队列；导入质量按上传日期统计。跳过的阶段不推定已通过。</p>`,
+  );
 }
 function drill(ids) {
   list = {
@@ -1308,7 +1482,7 @@ function settings() {
   const conf = S.config || {};
   $("#workspace").innerHTML =
     title("系统设置", "账号、权限、模型与备份均由服务器校验") +
-    `<div class="team-grid"><section class="panel"><h3>当前身份</h3><p>${esc(S.user.name)} · ${esc(S.user.role)}<br>可用权限：${S.permissions.map(esc).join("、")}<br>会话 ${S.limits?.sessionHours || 8} 小时有效；修改密码会注销本人全部会话。</p>${button("修改本人密码", "changePassword")}<h3 class="section-gap">字段治理</h3><p>性别无必要业务用途，不收集、不设必填、不提供筛选统计、不进入匹配。未任职通过明确选项表示；占位值不算完整。联系方式、薪资和原件仅限管理员 / HR 查看。面试官只能查看安排给本人的人才和面试。</p></section>${can("admin") ? `<section class="panel"><h3>本地模型与 OCR</h3><p>默认使用可复核证据规则。模型请求由服务端发送，浏览器不接触模型接口。无远程回退。</p>${button("配置模型 / OCR", "editConfig")}<h3 class="section-gap">共享数据备份</h3><p>包含数据库记录、账号密码哈希、原件与审计；备份含敏感信息，请妥善保管。恢复后所有会话失效。</p>${button("导出完整工作区", "backup", "", true)} ${button("恢复工作区备份", "restoreBackup")}<input type="file" id="backupFile" accept=".json" hidden></section>` : '<section class="panel"><h3>共享工作区</h3><p>人才、原件和任务保存在服务端，不依赖当前浏览器。模型配置、用户管理、审计与备份恢复仅管理员可用。</p></section>'}</div>${
+    `<div class="team-grid"><section class="panel"><h3>当前身份</h3><p>${esc(S.user.name)} · ${esc(S.user.role)}<br>可用权限：${S.permissions.map(esc).join("、")}<br>会话 ${S.limits?.sessionHours || 8} 小时有效；修改密码会注销本人全部会话。</p>${button("修改本人密码", "changePassword")}<h3 class="section-gap">字段治理</h3><p>性别无必要业务用途，不收集、不设必填、不提供筛选统计、不进入匹配。未任职通过明确选项表示；占位值不算完整。联系方式、薪资和原件仅限管理员 / HR 查看。面试官只能查看安排给本人的人才和面试。</p></section>${can("admin") ? `<section class="panel"><h3>本地模型与 OCR</h3><p>简历字段提取默认使用 Qwen/Qwen3.8-27B；岗位匹配默认使用可复核证据规则。模型请求由服务端发送，浏览器不接触模型接口。无远程回退。</p>${button("配置模型 / OCR", "editConfig")}<h3 class="section-gap">共享数据备份</h3><p>包含数据库记录、账号密码哈希、原件与审计；备份含敏感信息，请妥善保管。恢复后所有会话失效。</p>${button("导出完整工作区", "backup", "", true)} ${button("恢复工作区备份", "restoreBackup")}<input type="file" id="backupFile" accept=".json" hidden></section>` : '<section class="panel"><h3>共享工作区</h3><p>人才、原件和任务保存在服务端，不依赖当前浏览器。模型配置、用户管理、审计与备份恢复仅管理员可用。</p></section>'}</div>${
       can("admin")
         ? `<section class="panel section-gap"><div class="work-title"><h3>团队账号与访问控制</h3>${button("＋ 创建账号", "editUser", "", true)}</div>${table(
             ["账号", "姓名", "角色", "状态", "操作"],
@@ -1355,16 +1529,36 @@ function editConfig() {
   const c = S.config;
   openModal(
     "本地模型与 OCR 配置",
-    `<form id="configForm"><div class="form-grid">${input(
+    `<form id="configForm"><div class="form-grid"><h4 class="config-heading">简历字段提取</h4>${input(
+      "extractionMode",
+      "字段识别方式",
+      c.extractionMode ?? (c.mode === "model" ? "model" : "rules"),
+      "text",
+      [
+        { value: "rules", label: "规则提取" },
+        { value: "model", label: "本地大模型填表" },
+      ],
+    )}<p class="config-help">模型不可用时保留规则结果供核对；没有原文依据的字段保持空白。</p><h4 class="config-heading">岗位匹配</h4>${input(
       "mode",
-      "评分模式",
+      "匹配评分方式",
       c.mode,
       "text",
       [
-        { value: "rules", label: "本地证据规则" },
-        { value: "model", label: "真实本地模型" },
+        { value: "rules", label: "证据规则" },
+        { value: "model", label: "本地大模型辅助评分" },
       ],
-    )}${input("model", "模型名称", c.model)}${input("modelUrl", "本机 OpenAI 兼容接口", c.modelUrl, "text", null, true)}<label class="checkbox-label"><input type="checkbox" name="ocr" ${c.ocr ? "checked" : ""}>扫描 PDF 启用本地 OCR</label></div><p class="hint">Windows 使用系统 OCR 语言包；Linux 使用 Tesseract。仅允许 localhost / 127.0.0.1 / ::1 接口，禁止跳转至远程模型。模型离线时任务保留成功项并可重试。</p>${endForm("保存版本化配置")}</form>`,
+    )}<p class="config-help">此设置只影响岗位匹配，不影响简历字段提取。</p><h4 class="config-heading">本地模型服务</h4>${input(
+      "model",
+      "模型 ID",
+      c.model,
+    )}${input(
+      "modelUrl",
+      "OpenAI 兼容接口",
+      c.modelUrl,
+      "text",
+      null,
+      true,
+    )}<label class="field wide">API Key<input type="password" name="apiKey" autocomplete="new-password" maxlength="4096" placeholder="${c.apiKeyConfigured ? "已配置，留空保留原密钥" : "输入模型接口密钥"}"></label><div class="config-actions wide"><button type="button" class="btn" data-action="testModelConfig">测试模型连接</button><span id="modelTestResult" class="config-test" role="status" aria-live="polite"></span></div><h4 class="config-heading">扫描件 OCR</h4><label class="checkbox-label wide"><input type="checkbox" name="ocr" ${c.ocr ? "checked" : ""}>扫描 PDF 启用本机 OCR</label><p class="config-help">OCR 负责把扫描图片转成文字，字段提取再使用上方规则或大模型。没有 OCR 时，TXT、DOCX 和带文字层的 PDF 仍可提取；纯扫描 PDF 无法只靠规则识别。</p><p class="hint wide">Windows 使用系统 OCR 语言包；Linux 使用 Tesseract。模型接口仅允许 localhost / 127.0.0.1 / ::1 或指定内网端点 http://172.30.0.101:20001/v1，禁止跳转。配置的字段提取或匹配使用本地模型时，简历原文会发送至该接口。</p></div>${endForm("保存配置")}</form>`,
   );
   formHandler("#configForm", async (v) => {
     await api("admin/config", { ...v, rev: c.rev, ocr: v.ocr === "on" });
@@ -1372,6 +1566,29 @@ function editConfig() {
     await sync();
     notify("配置已保存；历史匹配仍保留旧配置快照");
   });
+}
+async function testModelConfig() {
+  const form = $("#configForm");
+  const result = $("#modelTestResult");
+  const button = form.querySelector('[data-action="testModelConfig"]');
+  const values = Object.fromEntries(new FormData(form));
+  result.className = "config-test";
+  result.textContent = "正在测试模型连接…";
+  button.disabled = true;
+  try {
+    const response = await api("admin/model-test", {
+      model: values.model,
+      modelUrl: values.modelUrl,
+      apiKey: values.apiKey,
+    });
+    result.className = "config-test success-line";
+    result.textContent = `${response.message}：${response.model}`;
+  } catch (error) {
+    result.className = "config-test inline-error";
+    result.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 function changePassword() {
   openModal(
@@ -1416,25 +1633,13 @@ async function exportCandidates() {
     (k) =>
       k !== "text" && (can("salary") || !["monthly", "annual"].includes(k)),
   );
-  const quote = (v) =>
-    '"' +
-    String(v ?? "")
-      .replace(/^[=+@-]/, "'$&")
-      .replace(/"/g, '""') +
-    '"';
-  saveDownload(
-    "人才列表.csv",
-    "\ufeff" +
-      [
-        keys.map((k) => quote(F[k])).join(","),
-        ...r.candidates.map((c) => keys.map((k) => quote(c[k])).join(",")),
-      ].join("\r\n"),
-    "text/csv;charset=utf-8",
-  );
+  saveCsv("人才列表.csv", [
+    keys.map((key) => F[key]),
+    ...r.candidates.map((candidate) => keys.map((key) => candidate[key])),
+  ]);
   notify("已按当前筛选和账号权限导出 " + r.candidates.length + " 条");
 }
 const actions = {
-  home: () => nav("dashboard"),
   refresh: () => sync(),
   candidates: () => nav("candidates"),
   imports: () => {
@@ -1447,17 +1652,30 @@ const actions = {
   },
   editCandidate,
   filterCandidates,
-  saveView,
   exportCandidates,
   upload,
   reviewImport,
+  reparseImport: async (id) => {
+    if (
+      !confirm("重新提取将替换本次解析值，尚未保存的手工修改不会保留。继续？")
+    )
+      return;
+    const task = await api("detail/import/" + id);
+    await api("import/" + id, { rev: task.rev, action: "reparse" });
+    closeModal();
+    nav("imports");
+    await sync();
+    notify("已重新排队提取，原件保留");
+  },
   viewResume,
   editJob,
   jobHistory,
   editApplication,
   editInterview,
+  scheduleApplication: (id) => editInterview("", id),
   editUser,
   editConfig,
+  testModelConfig,
   changePassword,
   editApplicationForCandidate: (id) => editApplication("", id),
   editApplicationForJob: (id) => editApplication("", "", id),
@@ -1511,22 +1729,6 @@ const actions = {
     list.page = 1;
     candidates();
   },
-  myQueue: () => {
-    if (!can("pipeline")) {
-      nav("interviews");
-      return;
-    }
-    queue = { ownerId: S.user.id, stage: "", overdue: false };
-    nav("pipeline");
-  },
-  lateQueue: () => {
-    if (!can("pipeline")) {
-      nav("interviews");
-      return;
-    }
-    queue = { ownerId: S.user.id, stage: "", overdue: true };
-    nav("pipeline");
-  },
   retryImport: async (id) => {
     const t = await api("detail/import/" + id);
     await api("import/" + id, { rev: t.rev, action: "retry" });
@@ -1572,10 +1774,98 @@ const actions = {
   exportRun: async (id) => {
     const r = await api("export-run", { id });
     saveDownload("岗位匹配固定快照.json", r);
+    notify("已生成匹配快照，请查看浏览器下载列表");
+  },
+  exportRunCsv: async (id) => {
+    const r = await api("export-run", { id });
+    const run = r.run || r;
+    saveCsv("岗位匹配明细.csv", [
+      [
+        "岗位",
+        "JD版本",
+        "匹配时间",
+        "候选人",
+        "分组",
+        "证据分",
+        "覆盖度%",
+        "条件",
+        "状态",
+        "权重",
+        "维度分",
+        "原文证据",
+      ],
+      ...run.items.flatMap((item) =>
+        item.dimensions.map((dimension) => [
+          run.versionSnapshot.title,
+          run.versionSnapshot.number,
+          run.created,
+          item.name,
+          item.group,
+          item.score,
+          item.coverage,
+          `${KIND[dimension.kind]}：${dimension.value}`,
+          {
+            MET: "满足",
+            PARTIAL: "部分满足",
+            NOT_MET: "不满足",
+            UNKNOWN: "待确认",
+          }[dimension.status],
+          dimension.weight,
+          dimension.level,
+          dimension.quote,
+        ]),
+      ),
+    ]);
+    notify("已生成匹配明细 CSV，请查看浏览器下载列表");
   },
   exportMetrics: async () => {
     const r = await api("metrics", { ...metricsFilter, export: true });
     saveDownload("招聘运营汇总.json", r);
+    notify("已生成运营汇总，请查看浏览器下载列表");
+  },
+  exportMetricsCsv: async () => {
+    const report = await api("metrics", { ...metricsFilter, export: true });
+    saveCsv("招聘运营汇总.csv", [
+      ["统计时点", report.asOf],
+      ["筛选条件", JSON.stringify(report.cohort)],
+      ["口径", report.definitions],
+      ["指标", "数值"],
+      ["队列人才", report.total],
+      ["待补全", report.incomplete],
+      ["待核实", report.unverified],
+      ["逾期待办", report.overdue],
+      ["逾期反馈", report.feedbackOverdue],
+      ["解析成功率%", report.parseRate],
+      ["解析任务分母", report.parseDenominator],
+      [],
+      [
+        "阶段",
+        "当前申请数",
+        "曾到达",
+        "到达下一阶段",
+        "转化率%",
+        "平均停留天数",
+      ],
+      ...report.stages.map((stage) => [
+        stage.stage,
+        stage.current,
+        stage.reached,
+        stage.advanced,
+        stage.conversion,
+        stage.averageDays,
+      ]),
+      [],
+      ["来源", "入库人数", "已安排面试", "当前录用", "面试率%", "录用率%"],
+      ...report.channels.map((channel) => [
+        channel.source,
+        channel.candidates,
+        channel.interviewed,
+        channel.hired,
+        channel.interviewRate,
+        channel.hireRate,
+      ]),
+    ]);
+    notify("已生成运营 CSV，请查看浏览器下载列表");
   },
   drillTotal: () => drill(metrics.candidateIds),
   drillOverdue: () => drill(metrics.overdueIds),
@@ -1591,6 +1881,38 @@ const actions = {
   restoreBackup: () => $("#backupFile").click(),
 };
 document.addEventListener("click", async (e) => {
+  const dateShortcut = e.target.closest("[data-date-offset]");
+  if (dateShortcut) {
+    const field = dateShortcut.closest(".field").querySelector("input");
+    if (field.disabled) return;
+    const date = new Date();
+    date.setDate(date.getDate() + Number(dateShortcut.dataset.dateOffset));
+    const local = toLocal(date);
+    field.value =
+      field.type === "date"
+        ? local.slice(0, 10)
+        : local.slice(0, 10) + (field.value.slice(10) || local.slice(10));
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    return;
+  }
+  const choice = e.target.closest("[data-choice]");
+  if (choice) {
+    const group = choice.closest("[data-choice-group]");
+    const field = group.closest(".choice-field").querySelector("input");
+    if (field.disabled) return;
+    field.value =
+      group.dataset.clearable && field.value === choice.dataset.choice
+        ? ""
+        : choice.dataset.choice;
+    group.querySelectorAll("[data-choice]").forEach((option) => {
+      option.setAttribute(
+        "aria-pressed",
+        String(option.dataset.choice === field.value),
+      );
+    });
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    return;
+  }
   const n = e.target.closest("[data-nav]");
   if (n) {
     nav(n.dataset.nav);
@@ -1633,13 +1955,17 @@ setInterval(async () => {
     !S ||
     pollBusy ||
     $("#dialog").open ||
-    !["dashboard", "imports", "matching"].includes(route)
+    !["imports", "recruitment"].includes(route)
   )
     return;
   pollBusy = true;
   try {
     await sync(false);
-    if (route === "matching" && routeId) {
+    if (
+      route === "recruitment" &&
+      location.hash.split("/")[1] === "matching" &&
+      routeId
+    ) {
       currentRun = await api("detail/run/" + routeId);
       renderRun();
     } else render();

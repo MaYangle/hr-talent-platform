@@ -24,19 +24,21 @@
     </header>
     <main id="app">
       <div class="screen">
-        <div class="browser">
-          <i class="dot"></i><i class="dot"></i><i class="dot"></i
-          ><span class="address" id="address">团队人才库</span
-          ><small>本地服务 · 共享数据库</small>
-        </div>
         <div class="screen-layout">
           <aside class="sidebar">
             <div class="side-brand"><span class="logo">T</span> Talent Hub</div>
             <nav id="navigation"></nav>
             <div class="side-user" id="user">等待登录</div>
           </aside>
-          <div class="workspace" id="workspace">
-            <div class="empty">正在连接团队工作区…</div>
+          <div class="workspace">
+            <nav
+              id="sectionNavigation"
+              class="section-tabs"
+              aria-label="招聘分栏"
+            ></nav>
+            <div id="workspace">
+              <div class="empty">正在连接团队工作区…</div>
+            </div>
           </div>
         </div>
       </div>
