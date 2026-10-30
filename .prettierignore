@@ -1,0 +1,6 @@
+.local-archive/
+node_modules/
+.venv/
+licenses/
+data/
+backups/

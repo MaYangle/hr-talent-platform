@@ -1,0 +1,19 @@
+{
+  "name": "hr-talent-platform",
+  "private": true,
+  "scripts": {
+    "format": "prettier --write web docs .github tests/web README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md THIRD_PARTY_NOTICES.md package.json playwright.config.js compose.yaml scripts/run_browser_tests.mjs",
+    "format:check": "prettier --check web docs .github tests/web README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md THIRD_PARTY_NOTICES.md package.json playwright.config.js compose.yaml scripts/run_browser_tests.mjs",
+    "check:js": "node --check web/app.js && node --check web/lib/ui.js",
+    "test:web": "node scripts/run_browser_tests.mjs"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2",
+    "@playwright/test": "1.62.1"
+  },
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
+}
