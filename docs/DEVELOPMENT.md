@@ -66,10 +66,10 @@ Linux CI 使用 `npx playwright install --with-deps chromium` 安装系统依赖
 
 [Quality workflow](../.github/workflows/quality.yml) 在推送 main 和 Pull Request 时运行：
 
-- Windows / Ubuntu 的 Python 3.12 格式、静态检查、回归测试和仓库检查。
+- Windows Server 2025 / Ubuntu 24.04 的 Python 3.12 格式、静态检查、回归测试和仓库检查。
 - Ubuntu 的前端 / 文档格式、JavaScript 语法和 Chromium 流程测试。
 
-工作流只授予 `contents: read`，固定 Action 提交 SHA，不需要仓库外的模型密钥。CI 通过不等于已完成企业环境、浏览器矩阵、模型质量、OCR 语言包或大规模负载验收。
+工作流只授予 `contents: read`，固定支持 Node 24 的 Action 提交 SHA，不需要仓库外的模型密钥。CI 通过不等于已完成企业环境、浏览器矩阵、模型质量、OCR 语言包或大规模负载验收。
 
 ## 改动边界
 
