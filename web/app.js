@@ -84,7 +84,7 @@ let S = null,
     city: "",
     source: "",
     skills: "",
-    status: "",
+    status: [],
     role: "",
     education: "",
     years: "",
@@ -419,7 +419,7 @@ function filteredCandidates() {
           .includes(q)) &&
       (!list.city || c.city === list.city) &&
       (!list.source || c.source === list.source) &&
-      (!list.status || c.status === list.status) &&
+      (!list.status.length || list.status.includes(c.status)) &&
       (!list.skills ||
         String(c.skills).toLowerCase().includes(list.skills.toLowerCase())) &&
       (!list.role || String(c.targetRole).includes(list.role)) &&
@@ -461,7 +461,11 @@ function latestResumeDate(c) {
     c.created
   );
 }
+function candidateFilter(label, action, id, selected, tone = "") {
+  return `<button type="button" class="btn candidate-filter ${tone}" data-action="${action}" data-id="${esc(id)}" aria-pressed="${selected}"><span class="filter-check" aria-hidden="true"></span>${label}</button>`;
+}
 function candidates() {
+  const focusedFilter = document.activeElement?.closest(".candidate-filter");
   const cs = filteredCandidates();
   const pages = Math.max(1, Math.ceil(cs.length / list.size));
   list.page = Math.min(list.page, pages);
@@ -471,7 +475,7 @@ function candidates() {
   );
   $("#workspace").innerHTML =
     title(
-      "人才库",
+      list.resultContext ? `人才库 · ${list.resultContext.title}` : "人才库",
       `${S.candidates.length} 位可访问人才 · 资料完整与人工核实分别管理`,
       (can("export") ? button("导出当前结果", "exportCandidates") : "") +
         (can("write")
@@ -479,7 +483,7 @@ function candidates() {
             button("上传简历", "imports")
           : ""),
     ) +
-    `<div class="pill-row">${button("全部", "allCandidates")}${statuses.map((s) => button(`${esc(s)} ${S.candidates.filter((c) => c.status === s).length}`, "statusFilter", s)).join("")}${button("待补全 " + S.candidates.filter((c) => c.missing?.length).length, "incompleteFilter")}${button("待核实 " + S.candidates.filter((c) => !c.verified).length, "unverifiedFilter")}</div><div class="filterbar"><input id="search" class="search" aria-label="检索人才" value="${esc(list.q)}" placeholder="姓名、公司、岗位或简历关键词…">${button("组合筛选", "filterCandidates")}<select id="candidateSort" aria-label="人才排序">${[
+    `${list.resultContext ? `<section class="candidate-result-context" aria-label="人才查询来源"><div><h4>${esc(list.resultContext.title)}</h4><p>${esc(list.resultContext.reason)}</p><p>${esc(list.resultContext.scope)}</p><small>来自招聘统计 · ${list.ids.length} 位关联人才（去重） · 统计时点：${esc(fmt(list.resultContext.asOf))}</small></div><div class="team-actions">${button("返回招聘统计", "backToMetrics")}${button("查看全部人才", "allCandidates")}</div></section>` : ""}<div class="pill-row" role="group" aria-label="人才状态筛选">${candidateFilter("全部", "allCandidates", "", !list.status.length && !list.incomplete && !list.unverified)}${statuses.map((s, index) => candidateFilter(`${esc(s)} ${S.candidates.filter((c) => c.status === s).length}`, "statusFilter", s, list.status.includes(s), `status-tone-${index}`)).join("")}${candidateFilter("待补全 " + S.candidates.filter((c) => c.missing?.length).length, "incompleteFilter", "", list.incomplete)}${candidateFilter("待核实 " + S.candidates.filter((c) => !c.verified).length, "unverifiedFilter", "", list.unverified)}</div><div class="filterbar"><input id="search" class="search" aria-label="检索人才" value="${esc(list.q)}" placeholder="姓名、公司、岗位或简历关键词…">${button("组合筛选", "filterCandidates")}<select id="candidateSort" aria-label="人才排序">${[
       ["updated-desc", "最近更新"],
       ["updated-asc", "最早更新"],
       ["resume-desc", "最新简历"],
@@ -497,7 +501,9 @@ function candidates() {
       list,
     )
       .filter(
-        ([k, v]) => !["page", "size", "sort", "q", "ids"].includes(k) && v,
+        ([k, v]) =>
+          !["page", "size", "sort", "q", "ids", "resultContext"].includes(k) &&
+          (Array.isArray(v) ? v.length : v),
       )
       .map(([k, v]) =>
         esc(
@@ -509,11 +515,15 @@ function candidates() {
             resumeFrom: "简历日期起",
             resumeTo: "简历日期止",
             years: "最低年限",
+            status: "人才状态",
             ...F,
-          }[k] || k) + (typeof v === "boolean" ? "" : "：" + v),
+          }[k] || k) +
+            (typeof v === "boolean"
+              ? ""
+              : "：" + (Array.isArray(v) ? v.join("、") : v)),
         ),
       )
-      .join(" · ")}${list.ids ? " · 来自指标下钻" : ""}</div>` +
+      .join(" · ")}</div>` +
     table(
       [
         "候选人",
@@ -529,7 +539,10 @@ function candidates() {
         `${esc(c.employment === "未任职" ? "当前未任职" : c.role || "待补全")}<small style="display:block">${esc(c.employment === "未任职" ? "" : c.company || "待补全")}</small>`,
         esc(c.city || "未知"),
         esc(c.years !== "" ? c.years + " 年" : "待补全"),
-        tag(c.status, c.status === "面试中" ? "blue" : "gray"),
+        tag(
+          c.status,
+          `candidate-status status-tone-${statuses.indexOf(c.status)}${list.status.includes(c.status) ? " is-selected" : ""}`,
+        ),
         c.missing?.length
           ? tag("待补全 " + c.missing.length, "amber")
           : tag(c.verified ? "已核实" : "待核对", c.verified ? "" : "amber"),
@@ -558,11 +571,19 @@ function candidates() {
     list.page = 1;
     candidates();
   };
+  if (focusedFilter)
+    [...$("#workspace").querySelectorAll(".candidate-filter")]
+      .find(
+        (filter) =>
+          filter.dataset.action === focusedFilter.dataset.action &&
+          filter.dataset.id === focusedFilter.dataset.id,
+      )
+      ?.focus({ preventScroll: true });
 }
 function filterCandidates() {
   openModal(
     "组合筛选与日期区间",
-    `<form id="filterForm"><div class="form-grid">${input("city", "城市", list.city, "text", ["", ...new Set(S.candidates.map((c) => c.city).filter(Boolean))])}${input("source", "来源", list.source, "text", ["", ...new Set(S.candidates.map((c) => c.source).filter(Boolean))])}${input("status", "人才状态", list.status, "text", ["", ...statuses])}${input("role", "目标岗位包含", list.role)}${input("skills", "技能包含", list.skills)}${input("years", "最低工作年限", list.years, "number")}${input("education", "学历包含", list.education)}${input("updatedFrom", "档案更新日期起", list.updatedFrom, "date")}${input("updatedTo", "档案更新日期止", list.updatedTo, "date")}${input("resumeFrom", "最新简历日期起", list.resumeFrom, "date")}${input("resumeTo", "最新简历日期止", list.resumeTo, "date")}<label class="checkbox-label"><input type="checkbox" name="incomplete" ${list.incomplete ? "checked" : ""}>仅待补全</label><label class="checkbox-label"><input type="checkbox" name="unverified" ${list.unverified ? "checked" : ""}>仅待核实</label></div>${endForm("应用筛选")}</form>`,
+    `<form id="filterForm"><div class="form-grid">${input("city", "城市", list.city, "text", ["", ...new Set(S.candidates.map((c) => c.city).filter(Boolean))])}${input("source", "来源", list.source, "text", ["", ...new Set(S.candidates.map((c) => c.source).filter(Boolean))])}<fieldset class="field wide"><legend>人才状态</legend><div class="candidate-status-options">${statuses.map((s) => `<label class="checkbox-label"><input type="checkbox" data-candidate-status value="${esc(s)}" ${list.status.includes(s) ? "checked" : ""}>${esc(s)}</label>`).join("")}</div></fieldset>${input("role", "目标岗位包含", list.role)}${input("skills", "技能包含", list.skills)}${input("years", "最低工作年限", list.years, "number")}${input("education", "学历包含", list.education)}${input("updatedFrom", "档案更新日期起", list.updatedFrom, "date")}${input("updatedTo", "档案更新日期止", list.updatedTo, "date")}${input("resumeFrom", "最新简历日期起", list.resumeFrom, "date")}${input("resumeTo", "最新简历日期止", list.resumeTo, "date")}<label class="checkbox-label"><input type="checkbox" name="incomplete" ${list.incomplete ? "checked" : ""}>仅待补全</label><label class="checkbox-label"><input type="checkbox" name="unverified" ${list.unverified ? "checked" : ""}>仅待核实</label></div>${endForm("应用筛选")}</form>`,
   );
   formHandler("#filterForm", async (v) => {
     if (
@@ -571,6 +592,11 @@ function filterCandidates() {
     )
       throw Error("起始日期不能晚于结束日期");
     Object.assign(list, v, {
+      status: [
+        ...document.querySelectorAll(
+          "#filterForm [data-candidate-status]:checked",
+        ),
+      ].map((option) => option.value),
       incomplete: v.incomplete === "on",
       unverified: v.unverified === "on",
       page: 1,
@@ -598,6 +624,35 @@ async function editCandidate(id) {
     notify("档案已保存；缺项可在详情查看");
   });
 }
+function profileDetails(candidate) {
+  return [
+    ["联系与求职意向", ["phone", "email", "city", "targetCity", "targetRole"]],
+    [
+      "任职与能力",
+      ["company", "role", "years", "education", "english", "skills"],
+    ],
+    ["补充信息", ["industry", "monthly", "annual", "source"]],
+  ]
+    .map(
+      ([label, keys]) =>
+        `<section class="profile-detail-group"><h4>${label}</h4><dl class="compact-meta">${keys
+          .filter(
+            (key) =>
+              can("salary") ||
+              !["monthly", "annual", "phone", "email"].includes(key),
+          )
+          .map(
+            (key) =>
+              `<dt>${esc(F[key])}</dt><dd>${esc(candidate[key] ?? "") || (candidate.employment === "未任职" && ["company", "role"].includes(key) ? "当前未任职" : requiredProfile.includes(key) || (["company", "role"].includes(key) && candidate.employment !== "未任职") ? "待补全" : "未填写（选填）")}</dd>`,
+          )
+          .join("")}</dl></section>`,
+    )
+    .join("");
+}
+function resumeReader(resume) {
+  const file = `/api/file/resume/${encodeURIComponent(resume.id)}`;
+  return `<div class="resume-reader"><div class="resume-reader-toolbar"><strong>${esc(resume.name)}</strong><div class="team-actions"><button class="btn" data-action="expandResume">全屏阅读</button><a class="btn" href="${file}" target="_blank" rel="noopener">打开原件</a><a class="btn" href="${file}" download>下载原件</a></div></div>${resume.name.toLowerCase().endsWith(".docx") ? '<p class="hint">DOCX 阅读预览保留正文和基本格式，精确排版请打开原件。</p>' : ""}<iframe class="resume-document" title="简历原文：${esc(resume.name)}" src="/api/preview/resume/${encodeURIComponent(resume.id)}" sandbox="allow-same-origin"></iframe></div>`;
+}
 async function profile() {
   const c = await api("detail/candidate/" + routeId);
   const resume = S.resumes.filter((r) => r.candidateId === c.id);
@@ -610,24 +665,8 @@ async function profile() {
       button("返回列表", "candidates") +
         (can("write") ? button("编辑档案", "editCandidate", c.id, true) : ""),
     ) +
-    `<div class="profile-grid"><div class="panel"><div class="profile-head"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><p>${esc(c.employment === "未任职" ? "当前未任职" : c.role || "待补全")} · ${esc(c.years || "0")} 年经验</p></div></div><div class="pill-row">${tag(c.status)}${tag(c.missing?.length ? "待补全" : c.verified ? "已核实" : "待核对", c.verified ? "" : "amber")}</div><dl class="compact-meta">${Object.entries(
-      F,
-    )
-      .filter(
-        ([k]) =>
-          k !== "text" &&
-          k !== "name" &&
-          (can("salary") ||
-            !["monthly", "annual", "phone", "email"].includes(k)),
-      )
-      .map(
-        ([k, l]) =>
-          `<dt>${esc(l)}</dt><dd>${esc(c[k] || (requiredProfile.includes(k) || (["company", "role"].includes(k) && c.employment !== "未任职") ? "待补全" : "未填写（选填）"))}</dd>`,
-      )
-      .join(
-        "",
-      )}</dl><p class="hint">薪资独立选填，人民币税前；年薪为年度总包。${can("salary") ? "" : "当前角色隐藏联系方式、薪资和原件。"}</p>${c.missing?.length ? `<p class="hint overdue">缺失或无效：${c.missing.map((k) => esc(F[k] || k)).join("、")}</p>` : ""}</div><div class="panel"><div class="section-tabs">${[
-      ["resume", "履历与字段证据"],
+    `<div class="profile-grid"><div class="panel"><div class="profile-head"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><p>${esc(c.employment === "未任职" ? "当前未任职" : c.role || "待补全")} · ${esc(c.years ?? "待补全")} 年经验</p></div></div><div class="pill-row">${tag(c.status)}${tag(c.missing?.length ? "待补全" : c.verified ? "已核实" : "待核对", c.verified ? "" : "amber")}</div>${profileDetails(c)}<p class="hint">薪资独立选填，人民币税前；年薪为年度总包。${can("salary") ? "" : "当前角色隐藏联系方式、薪资和原件。"}</p>${c.missing?.length ? `<p class="hint overdue">缺失或无效：${c.missing.map((k) => esc(F[k] || k)).join("、")}</p>` : ""}</div><div class="panel"><div class="section-tabs">${[
+      ["resume", "简历原文"],
       ["pipeline", "岗位流程 · " + apps.length],
       ["interviews", "面试记录 · " + ints.length],
       ["versions", "简历版本 · " + resume.length],
@@ -638,15 +677,23 @@ async function profile() {
       )
       .join("")}</div><div id="profileContent"></div></div></div>`;
   const target = $("#profileContent");
-  if (profileTab === "resume")
-    target.innerHTML = `<div class="quote">${esc(c.text || "当前角色无权查看简历原文，或尚未录入。")}</div>${Object.entries(
-      c.evidence || {},
-    )
-      .map(
-        ([k, e]) =>
-          `<div class="evidence-item"><b>${esc(F[k] || k)}</b> · ${tag(e.confirmed ? "已核对" : c.verified ? "提取证据" : "待核对", e.confirmed || c.verified ? "" : "amber")}<br>${esc(e.quote)}${e.corrected ? "<br>HR 核实修正值：" + esc(e.confirmedValue) : ""}<br><small>第 ${e.page} 页 / 段落组，第 ${e.line} 行</small></div>`,
-      )
-      .join("")}`;
+  if (profileTab === "resume") {
+    const selected =
+      resume.find((entry) => entry.id === c.currentResumeId) ||
+      [...resume].sort((first, second) =>
+        second.created.localeCompare(first.created),
+      )[0];
+    target.innerHTML =
+      can("files") && selected
+        ? `<label class="resume-version-select">简历版本<select id="profileResumeSelect">${resume.map((entry) => `<option value="${esc(entry.id)}" ${entry.id === selected.id ? "selected" : ""}>${esc(entry.name)}${entry.id === c.currentResumeId ? " · 当前选定" : ""}</option>`).join("")}</select></label><div id="resumeReaderHost">${resumeReader(selected)}</div>`
+        : `<div class="resume-text-document">${esc(c.text || (can("files") ? "尚未上传简历原件，可上传简历或编辑档案录入正文。" : "当前角色无权查看简历原件。"))}</div>`;
+    if ($("#profileResumeSelect"))
+      $("#profileResumeSelect").onchange = (event) => {
+        $("#resumeReaderHost").innerHTML = resumeReader(
+          resume.find((entry) => entry.id === event.target.value),
+        );
+      };
+  }
   if (profileTab === "pipeline")
     target.innerHTML =
       (can("pipeline")
@@ -681,7 +728,7 @@ async function profile() {
       (resume
         .map(
           (r) =>
-            `<div class="version-row"><div><b>${esc(r.name)}</b> ${c.currentResumeId === r.id ? tag("当前选定") : ""}<p class="hint">${fmt(r.created)} · ${esc(r.source)} · ${esc(r.actor)}${r.ocr ? " · OCR 文字" : ""}</p></div><div class="team-actions">${button("原件与证据", "viewResume", r.id)}${can("write") ? button("采用本版解析值", "adoptResume", r.id) : ""}</div></div>`,
+            `<div class="version-row"><div><b>${esc(r.name)}</b> ${c.currentResumeId === r.id ? tag("当前选定") : ""}<p class="hint">${fmt(r.created)} · ${esc(r.source)} · ${esc(r.actor)}${r.ocr ? " · OCR 文字" : ""}</p></div><div class="team-actions">${button("查看原文", "viewResume", r.id)}${can("write") ? button("采用本版解析值", "adoptResume", r.id) : ""}</div></div>`,
         )
         .join("") || '<p class="empty">当前权限下无简历版本。</p>') +
       `<h3 class="section-gap">人才状态历史</h3>${(c.statusHistory || []).map((h) => `<div class="history-item">${esc(h.from)} → ${esc(h.to)} · ${esc(h.actor)} · ${fmt(h.time)}</div>`).join("") || '<p class="hint">暂无人才库状态变更；岗位阶段历史在对应岗位流程中查看。</p>'}`;
@@ -695,19 +742,7 @@ async function profile() {
 }
 async function viewResume(id) {
   const r = await api("detail/resume/" + id);
-  openModal(
-    "原始简历与字段证据 · " + r.name,
-    `<div class="team-actions"><a class="btn" href="/api/file/resume/${id}" target="_blank" rel="noopener">打开原始附件</a><a class="btn" href="/api/file/resume/${id}" download>下载原件</a></div><p class="hint">${r.ocr ? "以下为本地 OCR 提取结果，请对照原件核实。" : "PDF 按页码定位；DOCX / TXT 按段落组与行定位。"}</p><div class="evidence-grid"><div class="evidence-list">${
-      Object.entries(r.evidence || {})
-        .map(
-          ([k, e]) =>
-            `<div class="evidence-item"><b>${esc(F[k] || k)}</b><br>${esc(e.raw)}<br><button class="detail-link" data-locate="${e.page}-${e.line}">定位第 ${e.page} 页 / 段落组，第 ${e.line} 行</button></div>`,
-        )
-        .join("") || "此版本暂无字段提取证据。"
-    }</div><div class="raw-lines">${rawPages(r.pages)}</div></div>`,
-    true,
-  );
-  bindLocate();
+  openModal("简历原文 · " + r.name, resumeReader(r), true);
 }
 function rawPages(pages) {
   return (pages || [])
@@ -1423,14 +1458,14 @@ async function drawMetrics() {
     "入库队列筛选；导入质量按上传日期统计",
   );
   $("#metricsContent").innerHTML =
-    `<div class="team-kpis"><button class="team-kpi" data-action="drillTotal">队列人才<b>${m.total}</b>点击下钻档案</button><div class="team-kpi">待补全 / 待核实<b>${m.incomplete} / ${m.unverified}</b>完整与核实独立统计</div><button class="team-kpi" data-action="drillOverdue">岗位逾期待办<b>${m.overdue}</b>点击下钻候选人</button><button class="team-kpi" data-action="drillFeedback">逾期面试反馈<b>${m.feedbackOverdue}</b>点击下钻候选人</button></div><div class="team-grid"><section class="panel"><h3>按入库月份新增趋势</h3><div class="trend">${m.trends.map(([k, n]) => `<div title="${k}：${n}"><small>${n}</small><i style="height:${(n / max) * 130}px"></i><span class="trend-label">${k}</span></div>`).join("") || '<p class="hint">此范围没有人才</p>'}</div></section><section class="panel"><h3>导入质量</h3><p>解析成功率：${m.parseRate === null ? "尚无已处理任务" : m.parseRate + "%"}<br>分母：${m.parseDenominator} 个已完成解析或失败的导入任务<br>疑似重复上传项：${m.duplicateCount}<br>统计时点：${fmt(m.asOf)}</p></section></div><section class="panel section-gap"><h3>岗位阶段人数、转化与停留</h3>${table(
+    `<div class="team-kpis"><button class="team-kpi" data-action="drillTotal">队列人才<b>${m.total}</b>查看范围内人才</button><div class="team-kpi">待补全 / 待核实<b>${m.incomplete} / ${m.unverified}</b>完整与核实独立统计</div><button class="team-kpi" data-action="drillOverdue">岗位逾期待办<b>${m.overdue}</b>查看跟进逾期人才</button><button class="team-kpi" data-action="drillFeedback">逾期面试反馈<b>${m.feedbackOverdue}</b>查看反馈逾期人才</button></div><div class="team-grid"><section class="panel"><h3>按入库月份新增趋势</h3><div class="trend">${m.trends.map(([k, n]) => `<div title="${k}：${n}"><small>${n}</small><i style="height:${(n / max) * 130}px"></i><span class="trend-label">${k}</span></div>`).join("") || '<p class="hint">此范围没有人才</p>'}</div></section><section class="panel"><h3>导入质量</h3><p>解析成功率：${m.parseRate === null ? "尚无已处理任务" : m.parseRate + "%"}<br>分母：${m.parseDenominator} 个已完成解析或失败的导入任务<br>疑似重复上传项：${m.duplicateCount}<br>统计时点：${fmt(m.asOf)}</p></section></div><section class="panel section-gap"><h3>岗位阶段人数、转化与停留</h3>${table(
       [
         "阶段",
         "当前申请数",
         "曾到达本阶段",
         "到达下一阶段 / 转化率",
         "平均停留天数",
-        "下钻",
+        "关联人才",
       ],
       m.stages.map((s) => [
         esc(s.stage),
@@ -1438,17 +1473,17 @@ async function drawMetrics() {
         s.reached,
         s.conversion === null ? "—" : `${s.advanced} / ${s.conversion}%`,
         s.averageDays ?? "—",
-        button("查看人才", "drillStage", s.stage),
+        button("查看当前阶段人才", "drillStage", s.stage),
       ]),
     )}</section><section class="panel section-gap"><h3>渠道质量（去重人才）</h3>${table(
-      ["来源", "入库", "已安排面试", "当前录用", "面试率 / 录用率", "下钻"],
+      ["来源", "入库", "已安排面试", "当前录用", "面试率 / 录用率", "关联人才"],
       m.channels.map((s) => [
         esc(s.source),
         s.candidates,
         s.interviewed,
         s.hired,
         `${s.interviewRate}% / ${s.hireRate}%`,
-        button("查看人才", "drillChannel", s.source),
+        button("查看渠道人才", "drillChannel", s.source),
       ]),
     )}</section><details class="profile-section"><summary>完整统计口径</summary><p class="hint">${esc(m.definitions)}</p></details>`;
   $("#metricsContent").insertAdjacentHTML(
@@ -1456,14 +1491,20 @@ async function drawMetrics() {
     `<p class="profile-quality">统计时点：${esc(fmt(m.asOf))}。人才、渠道和阶段按人才入库日期形成队列；导入质量按上传日期统计。跳过的阶段不推定已通过。</p>`,
   );
 }
-function drill(ids) {
+function drill(ids, title, reason) {
+  const cohort = metrics.cohort || {};
+  const scope = [
+    `岗位：${cohort.jobId ? jname(cohort.jobId) : "全部岗位"}`,
+    `渠道：${cohort.source || "全部渠道"}`,
+    `入库日期：${cohort.start || "不限起始"} 至 ${cohort.end || "不限结束"}`,
+  ].join(" · ");
   list = {
     ...list,
     q: "",
     city: "",
     source: "",
     skills: "",
-    status: "",
+    status: [],
     role: "",
     education: "",
     years: "",
@@ -1474,6 +1515,7 @@ function drill(ids) {
     incomplete: false,
     unverified: false,
     ids,
+    resultContext: { title, reason, scope, asOf: metrics.asOf },
     page: 1,
   };
   nav("candidates");
@@ -1682,6 +1724,10 @@ const actions = {
   matchJob: (id) => newRun(id),
   newRun: () => newRun(),
   viewRun,
+  expandResume: async () => {
+    const reader = $("#dialog[open] .resume-reader") || $(".resume-reader");
+    if (reader) await reader.requestFullscreen();
+  },
   prevPage: () => {
     list.page = Math.max(1, list.page - 1);
     candidates();
@@ -1697,7 +1743,7 @@ const actions = {
       city: "",
       source: "",
       skills: "",
-      status: "",
+      status: [],
       role: "",
       education: "",
       years: "",
@@ -1708,14 +1754,15 @@ const actions = {
       incomplete: false,
       unverified: false,
       ids: null,
+      resultContext: null,
       page: 1,
     };
     candidates();
   },
   statusFilter: (s) => {
-    list.status = s;
-    list.incomplete = false;
-    list.unverified = false;
+    list.status = list.status.includes(s)
+      ? list.status.filter((value) => value !== s)
+      : [...list.status, s];
     list.page = 1;
     candidates();
   },
@@ -1867,13 +1914,37 @@ const actions = {
     ]);
     notify("已生成运营 CSV，请查看浏览器下载列表");
   },
-  drillTotal: () => drill(metrics.candidateIds),
-  drillOverdue: () => drill(metrics.overdueIds),
-  drillFeedback: () => drill(metrics.feedbackIds),
+  backToMetrics: () => nav("analytics"),
+  drillTotal: () =>
+    drill(
+      metrics.candidateIds,
+      "统计范围内人才",
+      "展示符合招聘统计岗位、渠道与入库日期条件的全部人才。",
+    ),
+  drillOverdue: () =>
+    drill(
+      metrics.overdueIds,
+      "岗位跟进逾期人才",
+      "展示存在未结案且跟进截止时间已过的岗位申请所关联的人才。",
+    ),
+  drillFeedback: () =>
+    drill(
+      metrics.feedbackIds,
+      "面试反馈逾期人才",
+      "展示反馈截止时间已过、且面试尚未完成或取消所关联的人才。",
+    ),
   drillStage: (s) =>
-    drill(metrics.stages.find((x) => x.stage === s).candidateIds),
+    drill(
+      metrics.stages.find((x) => x.stage === s).candidateIds,
+      `当前招聘阶段：${s}`,
+      `仅展示当前处于“${s}”的岗位申请关联人才，不包含仅曾到达此阶段的申请。按人才去重，人数可能少于当前申请数；招聘阶段与人才库状态分别管理。`,
+    ),
   drillChannel: (s) =>
-    drill(metrics.channels.find((x) => x.source === s).candidateIds),
+    drill(
+      metrics.channels.find((x) => x.source === s).candidateIds,
+      `来源渠道：${s}`,
+      `展示来源为“${s}”且符合当前统计范围的人才。`,
+    ),
   backup: async () => {
     saveDownload("TalentHub共享工作区备份.json", await api("backup"));
     notify("完整备份已导出，包含账号哈希和附件，请妥善保管");

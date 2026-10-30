@@ -9,6 +9,39 @@ from talent_hub.store import Store
 from tests.support import TEST_PASSWORD, ApplicationTestCase, Client
 
 
+class PreviewTests(ApplicationTestCase):
+    def test_preview_uses_original_file_permissions_and_same_origin_framing(self):
+        candidate = self.candidate()
+        original = b"Original resume\n<script>alert(1)</script>"
+        (self.app.service.store.root / "files" / "preview-test").write_bytes(original)
+        with self.app.service.store.tx() as db:
+            resume = self.app.service.store.put(
+                db,
+                "resumes",
+                {
+                    "candidateId": candidate["id"],
+                    "fileId": "preview-test",
+                    "name": "resume.txt",
+                    "mime": "text/plain",
+                },
+            )
+        path = "/api/preview/resume/" + resume["id"]
+        status, content = self.client.request(path)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Original resume", content)
+        self.assertIn(b"&lt;script&gt;", content)
+        self.assertNotIn(b"<script>", content)
+        with self.client.opener.open(self.url + path) as response:
+            self.assertEqual(response.headers["X-Frame-Options"], "SAMEORIGIN")
+            self.assertIn("frame-ancestors 'self'", response.headers["Content-Security-Policy"])
+        with self.client.opener.open(self.url + "/") as response:
+            self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+        self.assertEqual(Client(self.url).request(path)[0], 401)
+        viewer, _ = self.user("preview-viewer", "面试官")
+        self.assertEqual(viewer.request(path)[0], 403)
+        self.assertEqual(self.client.api("preview/resume")[0], 400)
+
+
 class AuthenticationTests(ApplicationTestCase):
     def test_bootstrap_is_empty_and_has_no_reusable_setup_endpoint(self):
         status, result = self.client.api("boot")
@@ -449,9 +482,7 @@ class TaskTests(ApplicationTestCase):
         self.review(task)
         status, backup = self.client.api("backup")
         self.assertEqual(status, 200)
-        backup["records"].append(
-            {"kind": "views", "id": "retired", "rev": 1, "data": "{}"}
-        )
+        backup["records"].append({"kind": "views", "id": "retired", "rev": 1, "data": "{}"})
         with tempfile.TemporaryDirectory(prefix="talent-restored-") as directory:
             service = Service(Store(directory), settings=self.app.settings)
             service.restore({"confirm": "替换工作区", "backup": backup}, self.owner)

@@ -12,10 +12,64 @@ from docx import Document
 from pypdf import PdfWriter
 
 from talent_hub.model import model_dimensions, model_fields, model_url_allowed, probe_model
-from talent_hub.parsing import extract, validate_file
+from talent_hub.parsing import document_preview, extract, pdf_preview, validate_file
 
 
 class DocumentTests(unittest.TestCase):
+    def test_docx_preview_preserves_order_tables_and_escapes_untrusted_text(self):
+        document = Document()
+        document.add_heading("Resume", level=1)
+        document.add_paragraph().add_run("Verified profile").bold = True
+        document.add_table(rows=1, cols=1).cell(0, 0).text = "SQL experience"
+        document.add_paragraph('<script>alert("unsafe")</script>')
+        stream = io.BytesIO()
+        document.save(stream)
+        preview = document_preview(stream.getvalue(), "resume.docx").decode()
+        self.assertIn("<h2>Resume</h2>", preview)
+        self.assertIn("<strong>Verified profile</strong>", preview)
+        self.assertIn("<table>", preview)
+        self.assertLess(preview.index("Verified profile"), preview.index("SQL experience"))
+        self.assertIn("&lt;script&gt;", preview)
+        self.assertNotIn("<script>", preview)
+
+    def test_txt_preview_is_readable_and_does_not_execute_markup(self):
+        preview = document_preview(
+            b"\xef\xbb\xbfFirst line\n<img src=x onerror=alert(1)>", "resume.txt"
+        ).decode()
+        self.assertIn("First line\n&lt;img", preview)
+        self.assertNotIn("<img", preview)
+        with self.assertRaises(ValueError):
+            document_preview(b"%PDF-", "resume.pdf")
+
+    def test_docx_preview_includes_embedded_images_without_external_requests(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (40, 40), "green").save(image, format="PNG")
+        image.seek(0)
+        document = Document()
+        document.add_picture(image)
+        stream = io.BytesIO()
+        document.save(stream)
+        preview = document_preview(stream.getvalue(), "image.docx").decode()
+        self.assertIn('src="data:image/png;base64,', preview)
+
+    def test_pdf_preview_renders_bounded_pages_and_rejects_invalid_page_numbers(self):
+        writer = PdfWriter()
+        writer.add_blank_page(width=595, height=842)
+        stream = io.BytesIO()
+        writer.write(stream)
+        data = stream.getvalue()
+        content, mime = pdf_preview(data, "/api/preview/resume/example")
+        self.assertEqual(mime, "text/html; charset=utf-8")
+        self.assertIn(b"?page=1", content)
+        content, mime = pdf_preview(data, "/api/preview/resume/example", 1)
+        self.assertEqual(mime, "image/png")
+        self.assertTrue(content.startswith(b"\x89PNG"))
+        for page_number in [0, 2, -1]:
+            with self.subTest(page_number=page_number), self.assertRaises(ValueError):
+                pdf_preview(data, "/api/preview/resume/example", page_number)
+
     def test_bad_signature_encoding_and_configured_size_are_rejected(self):
         for name, content, maximum in [
             ("file.pdf", b"not pdf", 100),
@@ -139,6 +193,25 @@ class ModelContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 model_fields([], self.config | {"modelUrl": "https://provider.invalid/v1"})
             factory.assert_not_called()
+
+    def test_resume_compact_output_keeps_only_original_line_values(self):
+        pages = [{"page": 1, "text": "Alex Chen | Data Analyst\nSkills: SQL, Python"}]
+        rows = {
+            "name": ["Alex Chen", 1, 1],
+            "skills": ["SQL, Python", 1, 2],
+            "city": ["Paris", 1, 1],
+            "role": ["Data Analyst", True, 1],
+            "email": ["not-present", 1],
+        }
+        with patch("talent_hub.model.urllib.request.build_opener") as factory:
+            factory.return_value.open.return_value = self.output(rows)
+            fields, evidence = model_fields(pages, self.config)
+        self.assertEqual(fields, {"name": "Alex Chen", "skills": "SQL, Python"})
+        self.assertEqual(evidence["name"]["quote"], "Alex Chen")
+        self.assertEqual(evidence["skills"]["line"], 2)
+        self.assertFalse(evidence["name"]["confirmed"])
+        payload = json.loads(factory.return_value.open.call_args.args[0].data)
+        self.assertEqual(payload["max_tokens"], 4096)
 
     def test_explicit_private_model_endpoint_is_narrowly_allowlisted(self):
         self.assertTrue(model_url_allowed("http://172.30.0.101:20001/v1"))

@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 
 const browserErrors = new WeakMap();
 test.beforeEach(async ({ page }) => {
@@ -75,6 +76,164 @@ test("mouse workflow creates and edits records inside the consolidated recruitme
   await expect(page).toHaveURL(/#recruitment\/matching$/);
   await page.goto("/#dashboard");
   await expect(page).toHaveURL(/#candidates$/);
+});
+
+test("candidate status filters toggle multiple statuses and emphasize matching badges", async ({
+  page,
+}) => {
+  for (const [name, status] of [
+    ["Status New", "新入库"],
+    ["Status Interview", "面试中"],
+    ["Status Reserve", "人才储备"],
+  ]) {
+    await page.locator("[data-action=editCandidate]").first().click();
+    await page.locator("#candidateForm [name=name]").fill(name);
+    await page
+      .getByRole("button", { name: `人才库状态：${status}`, exact: true })
+      .click();
+    await page.locator("#candidateForm .primary").click();
+    await expect(page.locator("#dialog")).not.toBeVisible();
+  }
+  const statusFilter = (status) =>
+    page.locator(`[data-action=statusFilter][data-id="${status}"]`);
+  const all = page.locator("[data-action=allCandidates]");
+  await expect(all).toHaveAttribute("aria-pressed", "true");
+  await statusFilter("新入库").click();
+  await expect(statusFilter("新入库")).toHaveAttribute("aria-pressed", "true");
+  await expect(all).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".table-card tbody")).not.toContainText(
+    "Status Interview",
+  );
+  await statusFilter("面试中").click();
+  await expect(statusFilter("新入库")).toHaveAttribute("aria-pressed", "true");
+  await expect(statusFilter("面试中")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".table-card tbody")).toContainText("Status New");
+  await expect(page.locator(".table-card tbody")).toContainText(
+    "Status Interview",
+  );
+  await expect(page.locator(".table-card tbody")).not.toContainText(
+    "Status Reserve",
+  );
+  for (const badge of await page.locator(".candidate-status").all()) {
+    await expect(badge).toHaveClass(/is-selected/);
+  }
+  await page.screenshot({
+    path: test.info().outputPath("candidate-status-selection.png"),
+  });
+  await statusFilter("新入库").click();
+  await expect(statusFilter("新入库")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".table-card tbody")).not.toContainText(
+    "Status New",
+  );
+  await page.locator("[data-action=filterCandidates]").click();
+  await expect(
+    page.locator('#filterForm [data-candidate-status][value="面试中"]'),
+  ).toBeChecked();
+  await page
+    .locator('#filterForm [data-candidate-status][value="人才储备"]')
+    .check();
+  await page.locator("#filterForm .primary").click();
+  await expect(page.locator("#dialog")).not.toBeVisible();
+  await expect(statusFilter("人才储备")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator(".table-card tbody")).toContainText(
+    "Status Reserve",
+  );
+  await all.click();
+  await expect(all).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.locator(
+      '.candidate-filter[data-action=statusFilter][aria-pressed="true"]',
+    ),
+  ).toHaveCount(0);
+  await expect(page.locator(".candidate-status.is-selected")).toHaveCount(0);
+  await statusFilter("面试中").focus();
+  await page.keyboard.press("Space");
+  await expect(statusFilter("面试中")).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("Space");
+  await expect(all).toHaveAttribute("aria-pressed", "true");
+});
+
+test("recruitment metrics explain related candidate queries and preserve the return scope", async ({
+  page,
+}) => {
+  const boot = await (await page.request.get("/api/boot")).json();
+  const headers = {
+    Origin: new URL(page.url()).origin,
+    "X-CSRF-Token": boot.csrf,
+  };
+  const create = async (path, data) => {
+    const response = await page.request.post(`/api/${path}`, { headers, data });
+    expect(response.ok()).toBe(true);
+    return response.json();
+  };
+  const candidate = await create("candidate", {
+    name: "统计范围人才",
+    source: "统计验收",
+  });
+  const job = await create("job", {
+    title: "统计验收岗位",
+    text: "SQL",
+    criteria: [{ kind: "skill", value: "SQL", weight: 100 }],
+  });
+  await create("application", {
+    candidateId: candidate.id,
+    jobId: job.id,
+    ownerId: boot.user.id,
+    stage: "业务面试",
+    nextAction: "确认面试",
+    due: "2099-12-01T10:00:00+08:00",
+  });
+  await page.reload();
+  await page.locator("#navigation [data-nav=recruitment]").click();
+  await page.locator('#sectionNavigation [data-nav="analytics"]').click();
+  await page.locator("#metricsForm [name=jobId]").selectOption(job.id);
+  await page
+    .getByRole("button", { name: "渠道：统计验收", exact: true })
+    .click();
+  await page.locator("#metricsForm [name=start]").fill("2020-01-01");
+  await page.locator("#metricsForm [name=end]").fill("2099-12-31");
+  await page.locator("#metricsForm .primary").click();
+  const stage = page.locator(
+    '#metricsContent [data-action=drillStage][data-id="业务面试"]',
+  );
+  await expect(page.locator("#metricsContent")).not.toContainText("下钻");
+  await stage.click();
+  await expect(page).toHaveURL(/#candidates$/);
+  const context = page.getByRole("region", { name: "人才查询来源" });
+  await expect(context).toContainText("当前招聘阶段：业务面试");
+  await expect(context).toContainText("不包含仅曾到达此阶段");
+  await expect(context).toContainText("岗位：统计验收岗位");
+  await expect(context).toContainText("渠道：统计验收");
+  await expect(context).toContainText("2020-01-01 至 2099-12-31");
+  await expect(context).toContainText("1 位关联人才");
+  await expect(page.locator(".table-card tbody")).toContainText("统计范围人才");
+  await expect(page.locator(".table-card tbody tr")).toHaveCount(1);
+  await page.screenshot({
+    path: test.info().outputPath("candidate-query-context.png"),
+  });
+  await page.getByRole("button", { name: "返回招聘统计", exact: true }).click();
+  await expect(page).toHaveURL(/#analytics$/);
+  await expect(page.locator("#metricsForm [name=jobId]")).toHaveValue(job.id);
+  await expect(page.locator("#metricsForm [name=start]")).toHaveValue(
+    "2020-01-01",
+  );
+  await page
+    .locator('#metricsContent [data-action=drillStage][data-id="已录用"]')
+    .click();
+  await expect(context).toContainText("当前招聘阶段：已录用");
+  await expect(context).toContainText("0 位关联人才");
+  await expect(page.locator(".table-card .empty")).toContainText("暂无记录");
+  await page.getByRole("button", { name: "返回招聘统计", exact: true }).click();
+  await page
+    .locator('#metricsContent [data-action=drillChannel][data-id="统计验收"]')
+    .click();
+  await expect(context).toContainText("来源渠道：统计验收");
+  await page.getByRole("button", { name: "查看全部人才", exact: true }).click();
+  await expect(context).toHaveCount(0);
+  await expect(page.locator(".work-title h3")).toHaveText("人才库");
 });
 
 test("recruitment keeps jobs matching pipeline and interviews within one navigation entry", async ({
@@ -178,6 +337,149 @@ test("user text stays text and records survive a page reload", async ({
     ),
   ).toBe(false);
   expect(errors).toEqual([]);
+});
+
+test("verified profiles show readable DOCX and PDF originals without stale evidence labels", async ({
+  page,
+}) => {
+  const python =
+    process.env.TALENT_TEST_PYTHON ||
+    (process.platform === "win32"
+      ? ".venv/Scripts/python.exe"
+      : ".venv/bin/python");
+  const files = JSON.parse(
+    execFileSync(
+      python,
+      [
+        "-c",
+        `
+import base64, io, json
+from docx import Document
+from pypdf import PdfWriter
+from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+document = Document()
+document.add_heading('Resume Reader', level=1)
+document.add_paragraph('Reader Profile - Original DOCX content')
+document.add_paragraph().add_run('Original bold text').bold = True
+document.add_table(rows=1, cols=1).cell(0, 0).text = 'SQL experience table'
+document.add_paragraph('<script>throw Error(123)</script>')
+docx = io.BytesIO()
+document.save(docx)
+writer = PdfWriter()
+sheet = writer.add_blank_page(width=595, height=842)
+font = DictionaryObject({NameObject('/Type'):NameObject('/Font'),NameObject('/Subtype'):NameObject('/Type1'),NameObject('/BaseFont'):NameObject('/Helvetica')})
+sheet[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'):DictionaryObject({NameObject('/F1'):writer._add_object(font)})})
+content = DecodedStreamObject()
+content.set_data(b'BT /F1 24 Tf 50 760 Td (Original PDF Resume) Tj ET')
+sheet[NameObject('/Contents')] = writer._add_object(content)
+pdf = io.BytesIO()
+writer.write(pdf)
+print(json.dumps({'docx':base64.b64encode(docx.getvalue()).decode(),'pdf':base64.b64encode(pdf.getvalue()).decode()}))
+`,
+      ],
+      { encoding: "utf8" },
+    ),
+  );
+  const boot = await (await page.request.get("/api/boot")).json();
+  const headers = {
+    Origin: new URL(page.url()).origin,
+    "X-CSRF-Token": boot.csrf,
+  };
+  const post = async (path, data) => {
+    const response = await page.request.post(`/api/${path}`, { headers, data });
+    expect(response.ok()).toBe(true);
+    return response.json();
+  };
+  const importFile = async (extension) => {
+    const [queued] = await post("upload", {
+      files: [
+        { name: `reader-original.${extension}`, base64: files[extension] },
+      ],
+    });
+    let task;
+    await expect
+      .poll(async () => {
+        task = await (
+          await page.request.get(`/api/detail/import/${queued.id}`)
+        ).json();
+        return task.state;
+      })
+      .toBe("review");
+    return task;
+  };
+  const docx = await importFile("docx");
+  const adopted = await post(`import/${docx.id}`, {
+    rev: docx.rev,
+    action: "create",
+    fields: {
+      name: "Reader Profile",
+      phone: "13900008888",
+      email: "reader@example.invalid",
+      city: "上海",
+      targetCity: "上海",
+      targetRole: "分析师",
+      years: "0",
+      education: "本科",
+      english: "英语六级",
+      employment: "未任职",
+      verified: true,
+    },
+  });
+  const pdf = await importFile("pdf");
+  const linked = await post(`import/${pdf.id}`, {
+    rev: pdf.rev,
+    action: "link",
+    candidateId: adopted.candidateId,
+  });
+  await page.reload();
+  await page.goto(`/#profile/${adopted.candidateId}`);
+  await expect(page.locator(".profile-grid")).toContainText("已核实");
+  await expect(page.locator("#profileContent .evidence-item")).toHaveCount(0);
+  await expect(page.locator(".profile-grid")).not.toContainText(
+    "履历与字段证据",
+  );
+  await expect(page.locator("#profileContent")).not.toContainText("待核对");
+  const preview = page.frameLocator(".resume-document");
+  await expect(
+    preview.getByRole("heading", { name: "Resume Reader" }),
+  ).toBeVisible();
+  await expect(preview.locator("strong")).toHaveText("Original bold text");
+  await expect(preview.locator("table")).toContainText("SQL experience table");
+  await expect(preview.locator("body")).toContainText(
+    "<script>throw Error(123)</script>",
+  );
+  await expect(preview.locator("script")).toHaveCount(0);
+  expect(
+    await page
+      .locator(".compact-meta")
+      .first()
+      .evaluate((element) => parseFloat(getComputedStyle(element).fontSize)),
+  ).toBeGreaterThanOrEqual(15);
+  await page.screenshot({
+    path: test.info().outputPath("profile-docx-reader.png"),
+    fullPage: true,
+  });
+  const response = page.waitForResponse((response) =>
+    response.url().endsWith(`/api/preview/resume/${linked.resumeId}?page=1`),
+  );
+  await page.locator("#profileResumeSelect").selectOption(linked.resumeId);
+  expect((await response).headers()["content-type"]).toBe("image/png");
+  await expect(preview.getByAltText("简历第 1 页")).toBeVisible();
+  await expect
+    .poll(() =>
+      preview
+        .getByAltText("简历第 1 页")
+        .evaluate((image) => image.naturalWidth),
+    )
+    .toBeGreaterThan(500);
+  await page.screenshot({
+    path: test.info().outputPath("profile-pdf-reader.png"),
+  });
+  await page.locator("[data-action=expandResume]").click();
+  await expect
+    .poll(() => page.evaluate(() => Boolean(document.fullscreenElement)))
+    .toBe(true);
+  await page.evaluate(() => document.exitFullscreen());
 });
 
 test("a local model fills the import form before human review and can be retried", async ({

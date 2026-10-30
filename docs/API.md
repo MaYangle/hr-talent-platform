@@ -37,17 +37,19 @@
 
 ## 业务接口
 
-| 方法与路径                       | 用途                                           |
-| -------------------------------- | ---------------------------------------------- |
-| `POST /api/candidate`            | 创建或修订档案，重新计算完整度                 |
-| `POST /api/job`                  | 创建岗位或发布新的不可变 JD 版本               |
-| `POST /api/application`          | 维护岗位阶段、负责人和下一步                   |
-| `POST /api/interview`            | 安排面试或填写本人可操作的反馈                 |
-| `GET /api/detail/candidate/{id}` | 当前人才档案，按权限隐藏字段                   |
-| `GET /api/detail/resume/{id}`    | 鉴权后的版本文本与证据                         |
-| `GET /api/file/resume/{id}`      | 鉴权原件访问，记录审计                         |
-| `POST /api/export`               | 按 ID 范围与当前角色生成导出数据               |
-| `POST /api/metrics`              | 按队列、岗位、来源计算运营指标；导出需额外权限 |
+| 方法与路径                              | 用途                                                                             |
+| --------------------------------------- | -------------------------------------------------------------------------------- |
+| `POST /api/candidate`                   | 创建或修订档案，重新计算完整度                                                   |
+| `POST /api/job`                         | 创建岗位或发布新的不可变 JD 版本                                                 |
+| `POST /api/application`                 | 维护岗位阶段、负责人和下一步                                                     |
+| `POST /api/interview`                   | 安排面试或填写本人可操作的反馈                                                   |
+| `GET /api/detail/candidate/{id}`        | 当前人才档案，按权限隐藏字段                                                     |
+| `GET /api/detail/resume/{id}`           | 鉴权后的版本文本与证据                                                           |
+| `GET /api/file/resume/{id}`             | 鉴权原件访问，记录审计                                                           |
+| `GET /api/preview/resume/{id}`          | 鉴权简历阅读页；PDF 按原始页面渲染，DOCX/TXT 安全转换为 HTML；沿用原件权限与审计 |
+| `GET /api/preview/resume/{id}?page={n}` | PDF 指定页 PNG，页码从 1 起，图片尺寸受限                                        |
+| `POST /api/export`                      | 按 ID 范围与当前角色生成导出数据                                                 |
+| `POST /api/metrics`                     | 按队列、岗位、来源计算运营指标；导出需额外权限                                   |
 
 ## 导入与任务
 

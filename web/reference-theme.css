@@ -584,18 +584,6 @@ small {
   font-size: 0.7cqw;
   color: var(--muted);
 }
-.meta {
-  display: grid;
-  grid-template-columns: 5.5cqw 1fr;
-  gap: 0.55cqw;
-  font-size: 0.71cqw;
-}
-.meta dt {
-  color: #92a5af;
-}
-.meta dd {
-  margin: 0;
-}
 .tabs {
   display: flex;
   gap: 1.7cqw;
@@ -627,19 +615,6 @@ small {
   font-size: 0.74cqw;
   line-height: 1.8;
   margin: 0.8cqw 0;
-}
-.timeline {
-  border-left: 2px solid #dceee4;
-  margin: 1cqw 0.6cqw;
-  padding-left: 1cqw;
-}
-.timeline h4 {
-  font-size: 0.82cqw;
-  margin: 0.8cqw 0 0.3cqw;
-}
-.timeline p {
-  font-size: 0.71cqw;
-  color: #7e939d;
 }
 .feedback {
   display: grid;

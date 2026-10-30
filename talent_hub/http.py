@@ -34,7 +34,14 @@ def handler_class(service, web_root=None):
         def log_message(self, *args):
             pass  # Never log filenames, query strings or profile payloads.
 
-        def send(self, value, status=200, extra=None, mime="application/json; charset=utf-8"):
+        def send(
+            self,
+            value,
+            status=200,
+            extra=None,
+            mime="application/json; charset=utf-8",
+            frameable=False,
+        ):
             raw = (
                 value
                 if isinstance(value, bytes)
@@ -45,11 +52,12 @@ def handler_class(service, web_root=None):
             self.send_header("Content-Length", str(len(raw)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Frame-Options", "SAMEORIGIN" if frameable else "DENY")
             self.send_header("Referrer-Policy", "same-origin")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; frame-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; frame-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors "
+                + ("'self'" if frameable else "'none'"),
             )
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
@@ -101,6 +109,23 @@ def handler_class(service, web_root=None):
                         extra={
                             "Content-Disposition": 'attachment; filename="talent-team-backup.json"'
                         },
+                    )
+                if path.startswith("/api/preview/"):
+                    from .parsing import document_preview, pdf_preview
+
+                    parts = path.split("/")
+                    if len(parts) != 5 or parts[3] != "resume" or not parts[4]:
+                        raise APIError("预览路径无效", 400)
+                    raw, mime, name = service.file("resume", parts[4], self.user())
+                    if mime == "application/pdf":
+                        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                        page_number = query.get("page", [None])[0]
+                        if page_number is not None:
+                            page_number = int(page_number)
+                        content, preview_mime = pdf_preview(raw, path, page_number)
+                        return self.send(content, mime=preview_mime, frameable=page_number is None)
+                    return self.send(
+                        document_preview(raw, name), mime="text/html; charset=utf-8", frameable=True
                     )
                 if path.startswith("/api/file/"):
                     parts = path.split("/")

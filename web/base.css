@@ -96,12 +96,6 @@ tbody tr[data-id]:hover {
   flex-wrap: wrap;
   margin-bottom: 10px;
 }
-.meta dd {
-  overflow-wrap: anywhere;
-}
-.meta {
-  grid-template-columns: 5.7cqw 1fr;
-}
 .profile-grid > .panel {
   min-width: 0;
 }
@@ -126,11 +120,6 @@ tbody tr[data-id]:hover {
 }
 .tabcontent .btn {
   margin-bottom: 12px;
-}
-.timeline pre {
-  white-space: pre-wrap;
-  font: inherit;
-  color: var(--muted);
 }
 .chart-title {
   display: flex;
@@ -381,10 +370,6 @@ dialog .note {
   }
   .profile-grid {
     grid-template-columns: 240px 1fr;
-  }
-  .meta {
-    font-size: 11px;
-    grid-template-columns: 70px 1fr;
   }
   .match-layout {
     grid-template-columns: 250px 1fr;
