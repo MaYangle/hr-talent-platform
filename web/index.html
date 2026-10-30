@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Talent Hub · 团队工作空间</title>
+    <link rel="stylesheet" href="reference-theme.css" />
+    <link rel="stylesheet" href="base.css" />
+    <link rel="stylesheet" href="team.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="logo">T</span>HR人才库平台
+        <span class="header-sub" style="font-weight: 400; color: #8ba0aa"
+          >/ 团队工作空间</span
+        >
+      </div>
+      <div class="toolbar">
+        <button id="refresh">刷新共享数据</button
+        ><button id="fullscreen">全屏</button
+        ><button id="logout">退出登录</button>
+      </div>
+    </header>
+    <main id="app">
+      <div class="screen">
+        <div class="browser">
+          <i class="dot"></i><i class="dot"></i><i class="dot"></i
+          ><span class="address" id="address">团队人才库</span
+          ><small>本地服务 · 共享数据库</small>
+        </div>
+        <div class="screen-layout">
+          <aside class="sidebar">
+            <div class="side-brand"><span class="logo">T</span> Talent Hub</div>
+            <nav id="navigation"></nav>
+            <div class="side-user" id="user">等待登录</div>
+          </aside>
+          <div class="workspace" id="workspace">
+            <div class="empty">正在连接团队工作区…</div>
+          </div>
+        </div>
+      </div>
+    </main>
+    <footer class="appfooter">
+      <span>共享服务 · SQLite / 原件 / 任务均保存在服务端</span
+      ><span id="storageStatus"></span>
+    </footer>
+    <dialog id="dialog">
+      <div class="modal-head">
+        <h3 id="modalTitle"></h3>
+        <button class="btn" id="closeModal" aria-label="关闭">×</button>
+      </div>
+      <div id="modalBody"></div>
+    </dialog>
+    <div class="toast" role="status" id="toast"></div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

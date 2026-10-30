@@ -1,0 +1,35 @@
+services:
+  talent-hub:
+    build: .
+    ports:
+      - "127.0.0.1:${TALENT_PORT:-4173}:4173"
+    environment:
+      TALENT_DATA_DIR: /data
+      TALENT_ALLOWED_HOSTS: ${TALENT_ALLOWED_HOSTS:-}
+      TALENT_SECURE_COOKIE: ${TALENT_SECURE_COOKIE:-0}
+      TALENT_SESSION_HOURS: ${TALENT_SESSION_HOURS:-8}
+      TALENT_MAX_UPLOAD_MIB: ${TALENT_MAX_UPLOAD_MIB:-20}
+      TALENT_MAX_REQUEST_MIB: ${TALENT_MAX_REQUEST_MIB:-80}
+      TALENT_MAX_BATCH_FILES: ${TALENT_MAX_BATCH_FILES:-50}
+      TALENT_REQUEST_TIMEOUT_SECONDS: ${TALENT_REQUEST_TIMEOUT_SECONDS:-30}
+      TALENT_MODEL_TIMEOUT_SECONDS: ${TALENT_MODEL_TIMEOUT_SECONDS:-120}
+      TALENT_MODEL_API_KEY: ${TALENT_MODEL_API_KEY:-}
+      TALENT_OCR_LANG: ${TALENT_OCR_LANG:-chi_sim+eng}
+    volumes:
+      - talent-data:/data
+    restart: unless-stopped
+    stop_grace_period: 150s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4173/health/ready', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 6s
+      start_period: 15s
+      retries: 3
+volumes:
+  talent-data:

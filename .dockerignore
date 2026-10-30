@@ -1,0 +1,17 @@
+.git
+.venv
+.local-archive
+.runtime
+node_modules
+__pycache__
+**/__pycache__
+.env
+.env.*
+data
+backups
+logs
+*.zip
+*.sqlite*
+*.db
+tests
+.github
