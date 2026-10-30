@@ -19,6 +19,7 @@ test("an empty workspace guides the first real action", async ({ page }) => {
     page.getByRole("heading", { name: "从第一份人才资料开始" }),
   ).toBeVisible();
   await page.locator("#navigation [data-nav=candidates]").click();
+  await expect(page.locator("#candidateSort")).toBeVisible();
   await expect(page.locator(".table-card .empty")).toBeVisible();
   await expect(page.locator(".table-card tbody")).toContainText("暂无记录");
   await expect(page.locator("#candidateSize")).toHaveValue("20");
@@ -29,6 +30,9 @@ test("a rejected upload does not prevent later files from being saved", async ({
   page,
 }) => {
   await page.locator("#navigation [data-nav=imports]").click();
+  await expect(
+    page.getByRole("heading", { name: "简历导入", exact: true }),
+  ).toBeVisible();
   await page.locator("[data-action=upload]").click();
   await page.locator("#uploadFiles").setInputFiles([
     { name: "invalid.txt", mimeType: "text/plain", buffer: Buffer.from([255]) },
@@ -64,6 +68,7 @@ test("user text stays text and records survive a page reload", async ({
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.locator("#navigation [data-nav=candidates]").click();
+  await expect(page.locator("#candidateSort")).toBeVisible();
   await page.locator("[data-action=editCandidate]").click();
   const label = '<img src="invalid" onerror="throw Error(1)">';
   await page.locator("#candidateForm [name=name]").fill(label);
